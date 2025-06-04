@@ -8,7 +8,6 @@ checks if the results are empty or not.
 
 import os
 import requests
-from requests.auth import AuthBase, HTTPDigestAuth, HTTPBasicAuth
 from typing import Optional
 from timeout_decorator import timeout, TimeoutError  # type: ignore
 from bench_executor.logger import Logger
@@ -59,7 +58,7 @@ class Query():
 
     @timeout(TIMEOUT)
     def _execute_with_timeout(self, query: str, sparql_endpoint: str,
-                              headers: dict = {}, auth: Optional[AuthBase] = None) -> str:
+                              headers: dict = {}) -> str:
         """Execute a query with a provided timeout.
 
         Parameters
@@ -70,33 +69,20 @@ class Query():
             The URL of the SPARQL endpoint.
         headers : dict
             HTTP headers to supply when posting the query.
-        auth : AuthBase
-            Python Request's HTTP Auth class.
 
         Returns
         -------
         success : bool
             Whether the execution was successfull or not.
         """
-        self._logger.debug(f'Executing query "{query}" on endpoint '
-                           f'"{sparql_endpoint}"')
-
-        authentication = None
-        if auth.get('type') == 'digest':
-            username = auth['username']
-            password = auth['password']
-            authentication = HTTPDigestAuth(username, password)
-        elif auth.get('type') == 'basic':
-            username = auth['username']
-            password = auth['password']
-            authentication = HTTPBasicAuth(username, password)
-
+        self._logger.info(f'Executing query "{query}" on endpoint '
+                          f'"{sparql_endpoint}"')
         data = {
             'query': query,
             'maxrows': '3000000'  # Overwrite Virtuoso SPARQL limit
         }
         # Hardcoded to N-Triples
-        r = requests.post(sparql_endpoint, data=data, headers=headers, auth=authentication)
+        r = requests.post(sparql_endpoint, data=data, headers=headers)
         if r.status_code != 200:
             msg = f'Query failed: {r.text} (HTTP {r.status_code})'
             self._logger.error(msg)
@@ -104,7 +90,7 @@ class Query():
         return r.text
 
     def _execute(self, query: str, sparql_endpoint: str, expect_empty: bool,
-                 headers: dict = {}, auth: dict = {}) -> Optional[str]:
+                 headers: dict = {}) -> Optional[str]:
         """Execute a query on a SPARQL endpoint
 
         Parameters
@@ -117,8 +103,6 @@ class Query():
             Whether the expected results are empty or not.
         headers : dict
             HTTP headers to supply when posting the query.
-        auth : dict
-            Credentials.
 
         Returns
         -------
@@ -130,8 +114,7 @@ class Query():
         try:
             results = self._execute_with_timeout(query,
                                                  sparql_endpoint,
-                                                 headers,
-                                                 auth)
+                                                 headers)
         except TimeoutError:
             msg = f'Timeout ({TIMEOUT}s) reached for Query: "{query}"'
             self._logger.warning(msg)
@@ -149,7 +132,7 @@ class Query():
 
     def execute_and_save(self, query: str, sparql_endpoint: str,
                          results_file: str, expect_empty: bool = False,
-                         headers: dict = {}, auth: dict = {}) -> bool:
+                         headers: dict = {}) -> bool:
         """Executes a SPARQL query and save the results.
 
         The results are saved to the `results_file` path.
@@ -166,8 +149,6 @@ class Query():
             Whether the expected results are empty or not.
         headers : dict
             HTTP headers to supply when posting the query.
-        auth : dict
-            Credentials.
 
         Returns
         -------
@@ -176,7 +157,7 @@ class Query():
         """
         try:
             results = self._execute(query, sparql_endpoint, expect_empty,
-                                    headers, auth)
+                                    headers)
         except Exception as e:
             msg = f'Failed to execute query "{query}" on endpoint ' + \
                   f'"{sparql_endpoint}": {e}'
@@ -225,8 +206,7 @@ class Query():
 
     def execute_from_file(self, query_file: str, sparql_endpoint: str,
                           expect_empty: bool = False,
-                          headers: dict = {},
-                          auth: dict = {}) -> str:
+                          headers: dict = {}) -> str:
         """Executes a SPARQL query from file.
 
         The results are saved to the `results_file` path.
@@ -241,8 +221,6 @@ class Query():
             Whether the expected results are empty or not.
         headers : dict
             HTTP headers to supply when posting the query.
-        auth : dict
-            Credentials.
 
         Returns
         -------
@@ -259,7 +237,7 @@ class Query():
         query = self._read_query_file(query_file)
         try:
             results = self._execute(query, sparql_endpoint, expect_empty,
-                                    headers, auth)
+                                    headers)
         except Exception as e:
             msg = f'Failed to execute query "{query}" on endpoint ' + \
                   f'"{sparql_endpoint}": {e}'
@@ -275,8 +253,7 @@ class Query():
                                    sparql_endpoint: str,
                                    results_file: str,
                                    expect_empty: bool = False,
-                                   headers: dict = {},
-                                   auth: dict = {}) -> bool:
+                                   headers: dict = {}) -> bool:
         """Executes a SPARQL query from file and save the results.
 
         The results are saved to the `results_file` path.
@@ -293,8 +270,6 @@ class Query():
             Whether the expected results are empty or not.
         headers : dict
             HTTP headers to supply when posting the query.
-        auth : dict
-            Credentials.
 
         Returns
         -------
@@ -308,7 +283,7 @@ class Query():
         """
         query = self._read_query_file(query_file)
         results = self.execute_and_save(query, sparql_endpoint, results_file,
-                                        expect_empty, headers, auth)
+                                        expect_empty, headers)
         if results is not None:
             return True
 

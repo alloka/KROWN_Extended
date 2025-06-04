@@ -15,7 +15,7 @@
                 "number_of_properties": 20,
                 "value_size": 0,
                 "data_format": "postgresql",
-                "engine": "RMLMapper"
+                "engine": "Souffle"
             }
         },
         {
@@ -30,7 +30,7 @@
                 "number_of_properties": 20,
                 "value_size": 0,
                 "data_format": "postgresql",
-                "engine": "RMLMapper"
+                "engine": "Souffle"
             }
         },
         {
@@ -45,7 +45,7 @@
                 "number_of_properties": 20,
                 "value_size": 0,
                 "data_format": "postgresql",
-                "engine": "RMLMapper"
+                "engine": "Souffle"
             }
         },
         {
@@ -60,7 +60,7 @@
                 "number_of_properties": 20,
                 "value_size": 0,
                 "data_format": "postgresql",
-                "engine": "RMLMapper"
+                "engine": "Souffle"
             }
         }
     ]

@@ -16,7 +16,7 @@ from bench_executor.container import Container
 from bench_executor.logger import Logger
 
 VERSION = '6.0.0'
-TIMEOUT = 6 * 3600  # 6 hours
+TIMEOUT = 3 * 3600  # 6 hours
 
 
 class RMLMapper(Container):
