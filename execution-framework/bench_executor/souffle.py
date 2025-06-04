@@ -10,7 +10,9 @@ from bench_executor.container import Container
 from bench_executor.logger import Logger
 
 VERSION = '1.0.0'
-TIMEOUT = 3 * 3600  # 6 hours
+
+TIMEOUT = 3 * 3600  # 3 hours
+
 
 
 class Souffle(Container):
@@ -56,7 +58,9 @@ class Souffle(Container):
         return __name__.lower()
 
     @timeout(TIMEOUT)
+
     def _execute_with_timeout(self, cmd1: str) -> bool:
+
         """Execute a mapping with a provided timeout.
 
         Returns
@@ -68,8 +72,10 @@ class Souffle(Container):
                           f'{" ".join(arguments)}')
 
         # Execute command
+
         cmd = cmd1
         return self.run_and_wait_for_exit(cmd1)
+
 
     def execute(self, arguments: list) -> bool:
         """Execute Souffle with given arguments.
@@ -98,6 +104,7 @@ class Souffle(Container):
                         rdb_port: Optional[int] = None,
                         rdb_name: Optional[str] = None,
                         rdb_type: Optional[str] = None) -> bool:
+
         """Execute a First Order Logic mapping file with Souffle.
 
         Parameters
@@ -112,6 +119,7 @@ class Souffle(Container):
         success : bool
             Whether the execution was successfull or not.
         """
+
         max_heap = int(psutil.virtual_memory().total * (1/2))
 
         # Execute command
