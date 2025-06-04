@@ -37,13 +37,13 @@ docker build --build-arg SOUFFLE_VERSION=$SOUFFLE_VERSION \
 docker push alloka/souffle:v$SOUFFLE_VERSION
 cd ..
 
-# # PostgreSQL
-# echo "*** Building PostgreSQL $POSTGRESQL_VERSION ... ***"
-# cd PostgreSQL
-# docker build --build-arg POSTGRESQL_VERSION=$POSTGRESQL_VERSION \
-#     -t kgconstruct/postgresql:v$POSTGRESQL_VERSION .
-# docker push kgconstruct/postgresql:v$POSTGRESQL_VERSION
-# cd ..
+# PostgreSQL
+echo "*** Building PostgreSQL $POSTGRESQL_VERSION ... ***"
+cd PostgreSQL
+docker build --build-arg POSTGRESQL_VERSION=$POSTGRESQL_VERSION \
+    -t kgconstruct/postgresql:v$POSTGRESQL_VERSION .
+docker push kgconstruct/postgresql:v$POSTGRESQL_VERSION
+cd ..
 
 # # Virtuoso
 # echo "*** Building Virtuoso $VIRTUOSO_VERSION ... ***"
@@ -60,13 +60,13 @@ cd ..
 # docker push kgconstruct/fuseki:v$FUSEKI_VERSION
 # cd ..
 
-# # Morph-KGC
-# echo "*** Building Morph-KGC $MORPHKGC_VERSION ... ***"
-# cd Morph-KGC
-# docker build --build-arg MORPHKGC_VERSION=$MORPHKGC_VERSION \
-#     -t kgconstruct/morph-kgc:v$MORPHKGC_VERSION .
-# docker push kgconstruct/morph-kgc:v$MORPHKGC_VERSION
-# cd ..
+# Morph-KGC
+echo "*** Building Morph-KGC $MORPHKGC_VERSION ... ***"
+cd Morph-KGC
+docker build --build-arg MORPHKGC_VERSION=$MORPHKGC_VERSION \
+    -t kgconstruct/morph-kgc:v$MORPHKGC_VERSION .
+docker push kgconstruct/morph-kgc:v$MORPHKGC_VERSION
+cd ..
 
 # # Morph-KGC-Optimized
 # echo "*** Building Morph-KGC-Optimized $MORPHKGC_VERSION ... ***"
@@ -84,23 +84,23 @@ cd ..
 # docker push kgconstruct/morph-rdb:v$MORPHRDB_VERSION
 # cd ..
 
-# # Ontop
-# echo "*** Building Ontop $ONTOP_VERSION ... ***"
-# cd Ontop
-# docker build \
-#     --build-arg ONTOP_VERSION=$ONTOP_VERSION \
-#     -t kgconstruct/ontop:v$ONTOP_VERSION .
-# docker push kgconstruct/ontop:v$ONTOP_VERSION
-# cd ..
+# Ontop
+echo "*** Building Ontop $ONTOP_VERSION ... ***"
+cd Ontop
+docker build \
+    --build-arg ONTOP_VERSION=$ONTOP_VERSION \
+    -t kgconstruct/ontop:v$ONTOP_VERSION .
+docker push kgconstruct/ontop:v$ONTOP_VERSION
+cd ..
 
-# RMLMapper
-# echo "*** Building RMLMapper $RMLMAPPER_VERSION r$RMLMAPPER_BUILD ... ***"
-# cd RMLMapper
-# docker build --build-arg RMLMAPPER_VERSION=$RMLMAPPER_VERSION \
-#     --build-arg RMLMAPPER_BUILD=$RMLMAPPER_BUILD \
-#     -t kgconstruct/rmlmapper:v$RMLMAPPER_VERSION .
-# docker push kgconstruct/rmlmapper:v$RMLMAPPER_VERSION
-# cd ..
+RMLMapper
+echo "*** Building RMLMapper $RMLMAPPER_VERSION r$RMLMAPPER_BUILD ... ***"
+cd RMLMapper
+docker build --build-arg RMLMAPPER_VERSION=$RMLMAPPER_VERSION \
+    --build-arg RMLMAPPER_BUILD=$RMLMAPPER_BUILD \
+    -t kgconstruct/rmlmapper:v$RMLMAPPER_VERSION .
+docker push kgconstruct/rmlmapper:v$RMLMAPPER_VERSION
+cd ..
 
 # # SDM-RDFizer
 # echo "*** Building SDM-RDFizer $SDMRDFIZER_VERSION ... ***"
