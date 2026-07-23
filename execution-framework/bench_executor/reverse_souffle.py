@@ -1,0 +1,142 @@
+"""
+Reverse Souffle runner.
+
+This resource keeps the forward Souffle runner unchanged and provides
+an explicit reverse pipeline:
+1) run rulegen.jar on the mapping file to generate forward Datalog,
+2) run reverseR2RML.py to generate reverse Datalog,
+3) run Souffle on the reverse Datalog using RDF inputs from /data/shared.
+"""
+
+import os
+import psutil
+from typing import Optional
+from timeout_decorator import timeout, TimeoutError  # type: ignore
+from bench_executor.container import Container
+from bench_executor.logger import Logger
+
+VERSION = '1.0.0'
+TIMEOUT = 3 * 3600  # 3 hours
+
+
+class ReverseSouffle(Container):
+    """Souffle container for reverse R2RML execution."""
+
+    def __init__(self, data_path: str, config_path: str, directory: str,
+                 verbose: bool):
+        self._data_path = os.path.abspath(data_path)
+        self._config_path = os.path.abspath(config_path)
+        self._logger = Logger(__name__, directory, verbose)
+        self._verbose = verbose
+
+        os.makedirs(os.path.join(self._data_path, 'souffle'), exist_ok=True)
+        super().__init__(f'alloka/souffle:v{VERSION}', 'ReverseSouffle',
+                         self._logger,
+                         volumes=[f'{self._data_path}/souffle:/data',
+                                  f'{self._data_path}/shared:/data/shared'])
+
+    @property
+    def root_mount_directory(self) -> str:
+        return __name__.lower()
+
+    @timeout(TIMEOUT)
+    def _execute_with_timeout(self, command: str) -> bool:
+        self._logger.info(f'Executing ReverseSouffle command: {command}')
+        return self.run_and_wait_for_exit(command)
+
+    def execute(self, arguments: list) -> bool:
+        command = ' '.join(arguments)
+        try:
+            return self._execute_with_timeout(command)
+        except TimeoutError:
+            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for ReverseSouffle')
+        return False
+
+    def execute_mapping(self, mapping_file: str, output_file: str,
+                        serialization: str,
+                        reverse_program_file: str = 'Datalog_reverse.rs',
+                        support_report: Optional[str] = None,
+                        with_provenance: bool = False,
+                        rdb_username: Optional[str] = None,
+                        rdb_password: Optional[str] = None,
+                        rdb_host: Optional[str] = None,
+                        rdb_port: Optional[int] = None,
+                        rdb_name: Optional[str] = None,
+                        rdb_type: Optional[str] = None) -> bool:
+        """Generate and execute reverse Datalog using Souffle.
+
+        Parameters
+        ----------
+        mapping_file : str
+            Input mapping file path relative to /data/shared.
+        output_file : str
+            Kept for compatibility with the execution framework metadata schema.
+        serialization : str
+            Kept for compatibility with the execution framework metadata schema.
+        reverse_program_file : str
+            Output reverse Datalog file path relative to /data/shared.
+        support_report : str, optional
+            Optional JSON report output path relative to /data/shared.
+        with_provenance : bool
+            Enable provenance relations in the reverse program. Defaults to
+            False (normal reverse mode).
+        """
+        del output_file  # currently unused in reverse mode
+        del serialization  # currently unused in reverse mode
+
+        max_heap = int(psutil.virtual_memory().total * 0.5)
+
+        mapping_path = f"/data/shared/{mapping_file.replace('\\', '/').lstrip('/')}"
+        forward_program_path = '/data/shared/Datalog_rules.rs'
+        reverse_program_path = (
+            f"/data/shared/{reverse_program_file.replace('\\', '/').lstrip('/')}"
+        )
+
+        rulegen_args: list[str] = []
+        if rdb_username is not None and rdb_password is not None \
+                and rdb_host is not None and rdb_port is not None \
+                and rdb_name is not None and rdb_type is not None:
+            rulegen_args.extend(['-u', rdb_username, '-p', rdb_password])
+
+            parameters = ''
+            if rdb_type == 'MySQL':
+                protocol = 'jdbc:mysql'
+                parameters = '?allowPublicKeyRetrieval=true&useSSL=false'
+            elif rdb_type == 'PostgreSQL':
+                protocol = 'jdbc:postgresql'
+            else:
+                raise ValueError(f'Unknown RDB type: "{rdb_type}"')
+
+            rdb_dsn = f"'{protocol}://{rdb_host}:{rdb_port}/{rdb_name}{parameters}'"
+            rulegen_args.extend(['-dsn', rdb_dsn])
+
+        rulegen_suffix = ''
+        if rulegen_args:
+            rulegen_suffix = ' ' + ' '.join(rulegen_args)
+
+        rulegen_cmd = (
+            f'java -Xmx{max_heap} -Xms{max_heap} -jar rulegen.jar '
+            f'-m "{mapping_path}"{rulegen_suffix}'
+        )
+
+        reverse_cmd = (
+            'python3 /souffle/reverseR2RML.py '
+            f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
+        )
+        if with_provenance:
+            reverse_cmd += ' --with-provenance'
+        if support_report:
+            support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
+            reverse_cmd += f' --support-report "{support_path}"'
+
+        souffle_cmd = (
+            f'souffle "{reverse_program_path}" -F /data/shared -D /data/shared'
+        )
+
+        full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {souffle_cmd}"'
+
+        try:
+            return self._execute_with_timeout(full_cmd)
+        except TimeoutError:
+            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for ReverseSouffle')
+            return False

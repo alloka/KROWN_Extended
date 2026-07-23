@@ -36,13 +36,23 @@ RUN cmake -S . -B build -DCMAKE_INSTALL_PREFIX=.
 RUN cmake --build build -j8 --target install
 
 COPY rulegen.jar /souffle/rulegen.jar
+COPY reverseR2RML.py /souffle/reverseR2RML.py
+COPY functors.cpp /souffle/functors.cpp
+
+# Build custom Souffle functors as a shared library.
+RUN mkdir -p /souffle/lib && \
+	g++ -fPIC -shared -std=c++17 \
+	-I/souffle/include \
+	/souffle/functors.cpp \
+	-o /souffle/lib/libfunctors.so
 
 # Expose folders
 RUN mkdir /data
 RUN mkdir /mappings
 RUN mkdir /results
 RUN mkdir /configs
-RUN PATH=$PATH:/souffle/bin
+ENV PATH="/souffle/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/souffle/lib:${LD_LIBRARY_PATH}"
 
 # Silent
 CMD ["tail", "-f", "/dev/null"]
