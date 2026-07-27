@@ -10,8 +10,8 @@ an explicit reverse pipeline:
 
 import os
 import psutil
+import threading
 from typing import Optional
-from timeout_decorator import timeout, TimeoutError  # type: ignore
 from bench_executor.container import Container
 from bench_executor.logger import Logger
 
@@ -39,18 +39,30 @@ class ReverseSouffle(Container):
     def root_mount_directory(self) -> str:
         return __name__.lower()
 
-    @timeout(TIMEOUT)
     def _execute_with_timeout(self, command: str) -> bool:
         self._logger.info(f'Executing ReverseSouffle command: {command}')
-        return self.run_and_wait_for_exit(command)
+        result = [False]
+        exc_box = [None]
+
+        def _run():
+            try:
+                result[0] = self.run_and_wait_for_exit(command)
+            except Exception as exc:
+                exc_box[0] = exc
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(TIMEOUT)
+        if t.is_alive():
+            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for ReverseSouffle')
+            return False
+        if exc_box[0] is not None:
+            raise exc_box[0]
+        return result[0]
 
     def execute(self, arguments: list) -> bool:
         command = ' '.join(arguments)
-        try:
-            return self._execute_with_timeout(command)
-        except TimeoutError:
-            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for ReverseSouffle')
-        return False
+        return self._execute_with_timeout(command)
 
     def execute_mapping(self, mapping_file: str, output_file: str,
                         serialization: str,
@@ -129,14 +141,13 @@ class ReverseSouffle(Container):
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
             reverse_cmd += f' --support-report "{support_path}"'
 
+        # reverseR2RML emits external functor calls; compile mode must link
+        # against the bundled functor library.
         souffle_cmd = (
-            f'souffle "{reverse_program_path}" -F /data/shared -D /data/shared'
+            f'souffle -L /souffle/lib -l functors -c "{reverse_program_path}" '
+            f'-F /data/shared -D /data/shared'
         )
 
         full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {souffle_cmd}"'
 
-        try:
-            return self._execute_with_timeout(full_cmd)
-        except TimeoutError:
-            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for ReverseSouffle')
-            return False
+        return self._execute_with_timeout(full_cmd)

@@ -4,8 +4,8 @@ The Souffle reasoner.
 
 import os
 import psutil
+import threading
 from typing import Optional
-from timeout_decorator import timeout, TimeoutError  # type: ignore
 from bench_executor.container import Container
 from bench_executor.logger import Logger
 
@@ -57,24 +57,26 @@ class Souffle(Container):
         """
         return __name__.lower()
 
-    @timeout(TIMEOUT)
+    def _execute_with_timeout(self, command: str) -> bool:
+        self._logger.info(f'Executing Souffle command: {command}')
+        result = [False]
+        exc_box = [None]
 
-    def _execute_with_timeout(self, cmd1: str) -> bool:
+        def _run():
+            try:
+                result[0] = self.run_and_wait_for_exit(command)
+            except Exception as exc:
+                exc_box[0] = exc
 
-        """Execute a mapping with a provided timeout.
-
-        Returns
-        -------
-        success : bool
-            Whether the execution was successfull or not.
-        """
-        self._logger.info(f'Executing Souffle with arguments '
-                          f'{" ".join(arguments)}')
-
-        # Execute command
-
-        cmd = cmd1
-        return self.run_and_wait_for_exit(cmd1)
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(TIMEOUT)
+        if t.is_alive():
+            self._logger.warning(f'Timeout ({TIMEOUT}s) reached for Souffle')
+            return False
+        if exc_box[0] is not None:
+            raise exc_box[0]
+        return result[0]
 
 
     def execute(self, arguments: list) -> bool:
@@ -90,15 +92,12 @@ class Souffle(Container):
         success : bool
             Whether the execution succeeded or not.
         """
-        try:
-            return self._execute_with_timeout(arguments)
-        except TimeoutError:
-            msg = f'Timeout ({TIMEOUT}s) reached for Souffle'
-            self._logger.warning(msg)
+        command = ' '.join(arguments)
+        return self._execute_with_timeout(command)
 
-        return False
-
-    def execute_mapping(self, mapping_file: str, output_file: str,serialization: str,rdb_username: Optional[str] = None,
+    def execute_mapping(self, mapping_file: str, output_file: str,
+                        serialization: str,
+                        rdb_username: Optional[str] = None,
                         rdb_password: Optional[str] = None,
                         rdb_host: Optional[str] = None,
                         rdb_port: Optional[int] = None,
@@ -120,17 +119,22 @@ class Souffle(Container):
             Whether the execution was successfull or not.
         """
 
-        max_heap = int(psutil.virtual_memory().total * (1/2))
+        del output_file  # currently unused by this runner
+        del serialization  # currently unused by this runner
 
-        # Execute command
-        arguments1 = ['']  # Output directory
+        max_heap = int(psutil.virtual_memory().total * (1/2))
+        mapping_path = f"/data/shared/{mapping_file.replace('\\', '/').lstrip('/')}"
+        forward_program_path = '/data/shared/Datalog_rules.rs'
+
+        # Build rulegen command.
+        arguments1: list[str] = []
         if rdb_username is not None and rdb_password is not None \
                 and rdb_host is not None and rdb_port is not None \
                 and rdb_name is not None and rdb_type is not None:
 
-            arguments1.append('-u ')
+            arguments1.append('-u')
             arguments1.append(rdb_username)
-            arguments1.append('-p ')
+            arguments1.append('-p')
             arguments1.append(rdb_password)
 
             parameters = ''
@@ -143,34 +147,22 @@ class Souffle(Container):
                 raise ValueError(f'Unknown RDB type: "{rdb_type}"')
             rdb_dsn = f'\'{protocol}://{rdb_host}:{rdb_port}/' + \
                       f'{rdb_name}{parameters}\''
-            arguments1.append('-dsn ')
+            arguments1.append('-dsn')
             arguments1.append(rdb_dsn)
-        cmd1 = f'java -Xmx{max_heap} -Xms{max_heap}' + \
-              ' -jar rulegen.jar -m '+ os.path.join('/data/shared/', mapping_file)+ \
-              f'{" ".join(arguments1)}'     
-        #self.run_and_wait_for_exit(cmd1)
-        arguments = ['', os.path.join('/data/shared/Datalog_rules.rs'),
-             ' -D', '/data/shared/']  # Output directory
-        # if rdb_username is not None and rdb_password is not None \
-        #         and rdb_host is not None and rdb_port is not None \
-        #         and rdb_name is not None and rdb_type is not None:
 
-        #     arguments.append('-u')
-        #     arguments.append(rdb_username)
-        #     arguments.append('-p')
-        #     arguments.append(rdb_password)
+        rulegen_suffix = ''
+        if arguments1:
+            rulegen_suffix = ' ' + ' '.join(arguments1)
+        rulegen_cmd = (
+            f'java -Xmx{max_heap} -Xms{max_heap} -jar rulegen.jar '
+            f"-m '{mapping_path}'{rulegen_suffix}"
+        )
 
-        #     parameters = ''
-        #     if rdb_type == 'MySQL':
-        #         protocol = 'jdbc:mysql'
-        #         parameters = '?allowPublicKeyRetrieval=true&useSSL=false'
-        #     elif rdb_type == 'PostgreSQL':
-        #         protocol = 'jdbc:postgresql'
-        #     else:
-        #         raise ValueError(f'Unknown RDB type: "{rdb_type}"')
-        #     rdb_dsn = f'\'{protocol}://{rdb_host}:{rdb_port}/' + \
-        #               f'{rdb_name}{parameters}\''
-        #     arguments.append('-dsn')
-        #     arguments.append(rdb_dsn)
+        # Link bundled functors explicitly for consistent compile-mode behavior.
+        souffle_cmd = (
+            f"souffle -L /souffle/lib -l functors -c '{forward_program_path}' "
+            f"-F /data/shared -D /data/shared"
+        )
+        full_cmd = f'bash -lc "{rulegen_cmd} && {souffle_cmd}"'
 
-        return self._execute_with_timeout(cmd1)
+        return self._execute_with_timeout(full_cmd)
