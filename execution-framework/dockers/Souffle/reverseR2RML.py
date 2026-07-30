@@ -122,14 +122,28 @@ class ObjectRule:
 
 
 @dataclass
+class GraphRule:
+    pred_name: str
+    source_name: str
+    source_args: List[str]
+    term_expr: str
+    aux_args: List[str]
+    graph_kind: str = "unknown"   # iri_template | constant_iri | unknown
+    parts: List[TemplatePart] = field(default_factory=list)
+    constant_iri: Optional[str] = None
+
+
+@dataclass
 class TriplePattern:
     head_kind: str
     subject_pred: Optional[str]
     object_subject_pred: Optional[str]
     predicate_pred: Optional[str]
     object_pred: Optional[str]
+    graph_pred: Optional[str]
     predicate_constant: Optional[str]
     object_constant: Optional[str]
+    head_graph_term: Optional[str]
     raw_rule: str
 
 
@@ -498,12 +512,14 @@ def parse_datalog(text: str):
       - subject rules
       - predicate rules
       - object rules
+      - graph rules
       - triple production patterns
     """
     source_decls: Dict[str, SourceDecl] = {}
     subject_rules: Dict[str, SubjectRule] = {}
     predicate_rules: Dict[str, PredicateRule] = {}
     object_rules: Dict[str, ObjectRule] = {}
+    graph_rules: Dict[str, GraphRule] = {}
     triple_patterns: List[TriplePattern] = []
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("//")]
@@ -571,18 +587,35 @@ def parse_datalog(text: str):
                     )
                     continue
 
+                if head_pred.startswith("Graph"):
+                    parts = merge_adjacent_consts(flatten_expr(head_args[0]))
+                    kind, _, constant_iri = classify_object(parts)
+                    graph_rules[head_pred] = GraphRule(
+                        pred_name=head_pred,
+                        source_name=last_pred,
+                        source_args=last_args,
+                        term_expr=head_args[0],
+                        aux_args=head_args[1:],
+                        graph_kind=kind,
+                        parts=parts,
+                        constant_iri=constant_iri,
+                    )
+                    continue
+
         # triple/quadruple rules
         if head_pred in ("triple", "quadruple"):
             subj_pred = None
             obj_subj_pred = None
             pred_pred = None
             obj_pred = None
+            graph_pred = None
             pred_const = None
             obj_const = None
 
             head_s = head_args[0] if len(head_args) > 0 else None
             head_p = head_args[1] if len(head_args) > 1 else None
             head_o = head_args[2] if len(head_args) > 2 else None
+            head_g = head_args[3] if head_pred == "quadruple" and len(head_args) > 3 else None
 
             for atom in body_atoms:
                 atom = atom.strip()
@@ -609,6 +642,11 @@ def parse_datalog(text: str):
                         obj_pred = bp
                     elif obj_pred is None:
                         obj_pred = bp
+                elif bp.startswith("Graph"):
+                    if bargs and head_g is not None and bargs[0] == head_g:
+                        graph_pred = bp
+                    elif graph_pred is None:
+                        graph_pred = bp
 
             if len(head_args) >= 3:
                 if is_string_literal(head_args[1]) or (head_args[1].startswith("<") and head_args[1].endswith(">")):
@@ -623,13 +661,15 @@ def parse_datalog(text: str):
                     object_subject_pred=obj_subj_pred,
                     predicate_pred=pred_pred,
                     object_pred=obj_pred,
+                    graph_pred=graph_pred,
                     predicate_constant=pred_const,
                     object_constant=obj_const,
+                    head_graph_term=head_g,
                     raw_rule=line,
                 )
             )
 
-    return source_decls, subject_rules, predicate_rules, object_rules, triple_patterns
+    return source_decls, subject_rules, predicate_rules, object_rules, graph_rules, triple_patterns
 
 
 # =============================================================================
@@ -641,6 +681,7 @@ def find_source_for_triple_pattern(
     subject_rules: Dict[str, SubjectRule],
     predicate_rules: Dict[str, PredicateRule],
     object_rules: Dict[str, ObjectRule],
+    graph_rules: Optional[Dict[str, GraphRule]] = None,
 ) -> Optional[str]:
     """
     Infer the source predicate associated with a triple production rule.
@@ -653,6 +694,8 @@ def find_source_for_triple_pattern(
         srcs.add(predicate_rules[tp.predicate_pred].source_name)
     if tp.object_pred and tp.object_pred in object_rules:
         srcs.add(object_rules[tp.object_pred].source_name)
+    if tp.graph_pred and graph_rules is not None and tp.graph_pred in graph_rules:
+        srcs.add(graph_rules[tp.graph_pred].source_name)
 
     if len(srcs) == 1:
         return next(iter(srcs))
@@ -703,6 +746,8 @@ def build_template_parse_rule(parse_name: str, input_var: str, parts: List[Templ
         body_terms.append('InputPredicate(p)')
     elif input_var == 'o':
         body_terms.append('InputObject(o)')
+    elif input_var == 'g':
+        body_terms.append('InputGraph(g)')
 
     current = input_var
     temp_idx = 0
@@ -846,6 +891,28 @@ def build_object_parse_rule(source: SourceDecl, obj: ObjectRule) -> List[str]:
     return lines
 
 
+def build_graph_parse_rule(source: SourceDecl, graph: GraphRule) -> List[str]:
+    """
+    Build Parse_Graph... helper predicate for graph terms.
+    """
+    lines = [f'// Graph parser for {graph.pred_name}', f'// Source: {source.name}', f'// Template: {graph.term_expr}']
+    used_cols = source_columns_used_in_parts(graph.parts)
+
+    if graph.graph_kind == "constant_iri":
+        if used_cols:
+            lines.append(f'.decl Parse_{graph.pred_name}(g:symbol, {", ".join(c + ":symbol" for c in used_cols)})')
+        else:
+            lines.append(f'.decl Parse_{graph.pred_name}(g:symbol)')
+        lines.append(f'// No recoverable variables: constant graph IRI {graph.constant_iri}')
+    else:
+        parts = force_decode_vars(graph.parts) if graph.graph_kind == "iri_template" else graph.parts
+        lines.extend(build_template_parse_rule(f'Parse_{graph.pred_name}', 'g', parts))
+        return lines
+
+    lines.append('')
+    return lines
+
+
 def classify_term_recoverability(parts: List[TemplatePart]) -> str:
     """Classify a template as full/partial/unsupported recoverability."""
     cols = source_columns_used_in_parts(parts)
@@ -863,6 +930,7 @@ def compute_support_report(
     subject_rules: Dict[str, SubjectRule],
     predicate_rules: Dict[str, PredicateRule],
     object_rules: Dict[str, ObjectRule],
+    graph_rules: Dict[str, GraphRule],
     triple_patterns: List[TriplePattern],
 ) -> Dict[str, object]:
     """Compute full/partial/unsupported status for each triple pattern."""
@@ -875,7 +943,7 @@ def compute_support_report(
     details: List[Dict[str, object]] = []
 
     for idx, tp in enumerate(triple_patterns, start=1):
-        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules)
+        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules, graph_rules)
         if not src_name:
             summary["unsupported"] += 1
             details.append({
@@ -961,6 +1029,7 @@ def build_reverse_program(
     subject_rules: Dict[str, SubjectRule],
     predicate_rules: Dict[str, PredicateRule],
     object_rules: Dict[str, ObjectRule],
+    graph_rules: Dict[str, GraphRule],
     triple_patterns: List[TriplePattern],
     provenance_enabled: bool = False,
     minimal_mode: bool = True,
@@ -972,6 +1041,7 @@ def build_reverse_program(
         subject_rules,
         predicate_rules,
         object_rules,
+        graph_rules,
         triple_patterns,
     )
 
@@ -1005,9 +1075,11 @@ def build_reverse_program(
     lines.append('.decl InputSubject(s:symbol)')
     lines.append('.decl InputPredicate(p:symbol)')
     lines.append('.decl InputObject(o:symbol)')
+    lines.append('.decl InputGraph(g:symbol)')
     lines.append('InputSubject(s) :- triple(s, _, _).')
     lines.append('InputPredicate(p) :- triple(_, p, _).')
     lines.append('InputObject(o) :- triple(_, _, o).')
+    lines.append('InputGraph(g) :- quadruple(_, _, _, g).')
     lines.append('')
 
     lines.append('// External functor declarations')
@@ -1062,6 +1134,11 @@ def build_reverse_program(
         if src:
             lines.extend(build_object_parse_rule(src, obj))
 
+    for graph in graph_rules.values():
+        src = source_decls.get(graph.source_name)
+        if src:
+            lines.extend(build_graph_parse_rule(src, graph))
+
     # Derive optional rdf:type guards per subject predicate to disambiguate
     # subject templates that may parse the same IRI shape.
     subject_type_guards: Dict[str, List[str]] = {}
@@ -1081,7 +1158,7 @@ def build_reverse_program(
     recoverable_non_ref_any_by_source: Dict[str, Set[str]] = {}
     recoverable_non_rdf_type_by_source: Dict[str, Set[str]] = {}
     for tp in triple_patterns:
-        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules)
+        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules, graph_rules)
         if not src_name:
             continue
         src_cols = recoverable_non_ref_any_by_source.setdefault(src_name, set())
@@ -1120,7 +1197,7 @@ def build_reverse_program(
     handled_sources = set()
 
     for tp in triple_patterns:
-        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules)
+        src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules, graph_rules)
         if not src_name:
             continue
 
@@ -1154,6 +1231,8 @@ def build_reverse_program(
         pred_parse_vars: List[str] = []
         obj_parse_name = ""
         obj_parse_vars: List[str] = []
+        graph_parse_name = ""
+        graph_parse_vars: List[str] = []
         ref_parse_name = ""
         ref_parse_vars: List[str] = []
         subj_parse_vars: List[str] = []
@@ -1220,6 +1299,18 @@ def build_reverse_program(
                 obj_parse_name = f'Parse_{obj.pred_name}'
                 obj_parse_vars = list(obj_cols)
                 for c in obj_cols:
+                    col_var_for_source[c] = c
+                    direct_col_var_for_source[c] = c
+                    non_ref_direct_cols.add(c)
+
+        # Graph parse recovers columns actually encoded in the graph term.
+        graph_rule = graph_rules.get(tp.graph_pred) if tp.graph_pred else None
+        if graph_rule:
+            graph_cols = source_columns_used_in_parts(graph_rule.parts)
+            if graph_cols and parser_can_recover(graph_rule.parts):
+                graph_parse_name = f'Parse_{graph_rule.pred_name}'
+                graph_parse_vars = list(graph_cols)
+                for c in graph_cols:
                     col_var_for_source[c] = c
                     direct_col_var_for_source[c] = c
                     non_ref_direct_cols.add(c)
@@ -1293,6 +1384,9 @@ def build_reverse_program(
             if obj_parse_name:
                 obj_args = [v if v in needed_vars else '_' for v in obj_parse_vars]
                 atoms.append(f'{obj_parse_name}(o, {", ".join(obj_args)})')
+            if graph_parse_name:
+                graph_args = [v if v in needed_vars else '_' for v in graph_parse_vars]
+                atoms.append(f'{graph_parse_name}(g, {", ".join(graph_args)})')
             if ref_parse_name:
                 ref_args = [v if v in needed_vars else '_' for v in ref_parse_vars]
                 atoms.append(f'{ref_parse_name}(o, {", ".join(ref_args)})')
@@ -1350,9 +1444,14 @@ def build_reverse_program(
             lines.append(f'.decl {tuple_rel_name}(s:symbol, {tuple_sig})')
             tuple_evidence_by_source.setdefault(src_name, []).append((tuple_rel_name, tuple_cols))
 
+        graph_term_expr = tp.head_graph_term if tp.head_kind == 'quadruple' and tp.head_graph_term is not None else 'g'
+
         for triple_p in triple_p_terms:
             for triple_o in triple_o_terms:
-                base_parse_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})']
+                if tp.head_kind == 'quadruple':
+                    base_parse_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})']
+                else:
+                    base_parse_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})']
 
                 if not minimal_mode:
                     # Column evidence keyed by RDF subject s. This allows fallback
@@ -1392,8 +1491,12 @@ def build_reverse_program(
                         else:
                             lines.append(f'{tuple_rel_name}(s, {tuple_args}) :- {", ".join(tuple_parse_atoms)}.')
 
-                base_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + body_atoms
-                prov_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + build_parse_atoms_with_needed(set())
+                if tp.head_kind == 'quadruple':
+                    base_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + body_atoms
+                    prov_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + build_parse_atoms_with_needed(set())
+                else:
+                    base_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + body_atoms
+                    prov_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + build_parse_atoms_with_needed(set())
                 if guard_variants:
                     for gp, go in guard_variants:
                         atoms = base_atoms + [f'triple({triple_s}, {gp}, {go})']
@@ -1851,12 +1954,13 @@ def main():
     with open(in_file, 'r', encoding='utf-8') as f:
         text = f.read()
 
-    source_decls, subject_rules, predicate_rules, object_rules, triple_patterns = parse_datalog(text)
+    source_decls, subject_rules, predicate_rules, object_rules, graph_rules, triple_patterns = parse_datalog(text)
     support_report = compute_support_report(
         source_decls,
         subject_rules,
         predicate_rules,
         object_rules,
+        graph_rules,
         triple_patterns,
     )
 
@@ -1882,6 +1986,7 @@ def main():
             subject_rules,
             predicate_rules,
             object_rules,
+            graph_rules,
             triple_patterns,
             provenance_enabled=args.with_provenance,
             minimal_mode=True,
