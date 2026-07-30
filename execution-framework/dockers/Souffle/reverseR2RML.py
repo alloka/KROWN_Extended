@@ -933,7 +933,11 @@ def compute_support_report(
     graph_rules: Dict[str, GraphRule],
     triple_patterns: List[TriplePattern],
 ) -> Dict[str, object]:
-    """Compute full/partial/unsupported status for each triple pattern."""
+    """Compute full/partial/unsupported status for each triple/quadruple pattern.
+
+    The report reflects the recoverability of the subject, predicate, object,
+    and graph terms that were actually used to construct the RDF fact.
+    """
     summary = {
         "triple_patterns_total": len(triple_patterns),
         "full": 0,
@@ -975,14 +979,19 @@ def compute_support_report(
         subj_status = classify_term_recoverability(subj.parts)
         pred_status = "full"
         obj_status = "full"
+        graph_status = "full"
         reasons: List[str] = []
 
         if pred and pred.constant_iri is None:
             pred_status = classify_term_recoverability(pred.parts)
         if obj and obj.object_kind != "constant_iri":
             obj_status = classify_term_recoverability(obj.parts)
+        if tp.head_kind == "quadruple":
+            graph_rule = graph_rules.get(tp.graph_pred) if tp.graph_pred else None
+            if graph_rule is not None and graph_rule.graph_kind != "constant_iri":
+                graph_status = classify_term_recoverability(graph_rule.parts)
 
-        states = [subj_status, pred_status, obj_status]
+        states = [subj_status, pred_status, obj_status, graph_status]
         if any(s == "unsupported" for s in states):
             status = "unsupported"
         elif any(s == "partial" for s in states):
@@ -996,6 +1005,8 @@ def compute_support_report(
             reasons.append(f"predicate={pred_status}")
         if obj_status != "full":
             reasons.append(f"object={obj_status}")
+        if tp.head_kind == "quadruple" and graph_status != "full":
+            reasons.append(f"graph={graph_status}")
 
         summary[status] += 1
         details.append({
