@@ -4,7 +4,8 @@ Reverse Souffle runner.
 This resource keeps the forward Souffle runner unchanged and provides
 an explicit reverse pipeline:
 1) run rulegen.jar on the mapping file to generate forward Datalog,
-2) run reverseR2RML.py to generate reverse Datalog,
+2) run reverseR2RML.py to generate reverse Datalog (or forward+reverse
+    artifacts for selective provenance),
 3) run Souffle on the reverse Datalog using RDF inputs from /data/shared.
 """
 
@@ -67,8 +68,10 @@ class ReverseSouffle(Container):
     def execute_mapping(self, mapping_file: str, output_file: str,
                         serialization: str,
                         reverse_program_file: str = 'Datalog_reverse.rs',
+                        forward_program_file: str = 'Datalog_forward_with_prov.rs',
                         support_report: Optional[str] = None,
                         with_provenance: bool = False,
+                        target_triples_file: Optional[str] = None,
                         rdb_username: Optional[str] = None,
                         rdb_password: Optional[str] = None,
                         rdb_host: Optional[str] = None,
@@ -87,11 +90,19 @@ class ReverseSouffle(Container):
             Kept for compatibility with the execution framework metadata schema.
         reverse_program_file : str
             Output reverse Datalog file path relative to /data/shared.
+        forward_program_file : str
+            Output forward/provenance Datalog file path relative to
+            /data/shared when selective provenance is enabled.
         support_report : str, optional
             Optional JSON report output path relative to /data/shared.
         with_provenance : bool
             Enable provenance relations in the reverse program. Defaults to
             False (normal reverse mode).
+        target_triples_file : str, optional
+            Optional tab-separated file (s, p, o) relative to /data/shared.
+            When provided, reverse generation is routed through
+            ``--mode forward --with-provenance --reverse-output`` so
+            provenance is materialized only for listed triples.
         """
         del output_file  # currently unused in reverse mode
         del serialization  # currently unused in reverse mode
@@ -102,6 +113,9 @@ class ReverseSouffle(Container):
         forward_program_path = '/data/shared/Datalog_rules.rs'
         reverse_program_path = (
             f"/data/shared/{reverse_program_file.replace('\\', '/').lstrip('/')}"
+        )
+        forward_program_path_out = (
+            f"/data/shared/{forward_program_file.replace('\\', '/').lstrip('/')}"
         )
 
         rulegen_args: list[str] = []
@@ -131,12 +145,31 @@ class ReverseSouffle(Container):
             f'-m "{mapping_path}"{rulegen_suffix}'
         )
 
-        reverse_cmd = (
-            'python3 /souffle/reverseR2RML.py '
-            f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
-        )
-        if with_provenance:
-            reverse_cmd += ' --with-provenance'
+        if target_triples_file:
+            if not with_provenance:
+                raise ValueError(
+                    'target_triples_file requires with_provenance=True '
+                    '(reverseR2RML requires --mode forward --with-provenance)'
+                )
+
+            target_path = (
+                f"/data/shared/{target_triples_file.replace('\\', '/').lstrip('/')}"
+            )
+            reverse_cmd = (
+                'python3 /souffle/reverseR2RML.py '
+                f'"{forward_program_path}" "{forward_program_path_out}" '
+                '--mode forward --with-provenance '
+                f'--reverse-output "{reverse_program_path}" '
+                f'--target-triples-file "{target_path}"'
+            )
+        else:
+            reverse_cmd = (
+                'python3 /souffle/reverseR2RML.py '
+                f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
+            )
+            if with_provenance:
+                reverse_cmd += ' --with-provenance'
+
         if support_report:
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
             reverse_cmd += f' --support-report "{support_path}"'

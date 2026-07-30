@@ -1523,10 +1523,16 @@ def build_forward_provenance_program(
     triple_patterns: List[TriplePattern],
     provenance_enabled: bool = True,
     input_dir: Optional[str] = None,
+    target_triples_file: Optional[str] = None,
 ) -> str:
     """
     Build a forward provenance program:
       sources (input) -> triples/quads + provenance metadata.
+
+    When target_triples_file is given, a TargetTriple relation is added and
+    every Prov* rule is guarded by TargetTriple(s, p, o), limiting provenance
+    materialization to only the triples listed in that file.  The forward
+    triple/quadruple rules themselves are unaffected.
     """
     cleaned_lines: List[str] = []
 
@@ -1580,6 +1586,16 @@ def build_forward_provenance_program(
     lines.append('.decl ExplainAnyInput(source_rel:symbol, col:symbol, val:symbol)')
     lines.append('')
 
+    # Selective provenance: optional TargetTriple guard
+    target_guard: str = ''
+    if target_triples_file:
+        target_filename = os.path.basename(target_triples_file)
+        lines.append('// Selective provenance: only triples listed in TargetTriple receive Prov* facts')
+        lines.append('.decl TargetTriple(s:symbol, p:symbol, o:symbol)')
+        lines.append(f'.input TargetTriple(filename="{target_filename}", delimiter="\\t")')
+        lines.append('')
+        target_guard = ', TargetTriple(s, p, o)'
+
     for tp in triple_patterns:
         src_name = find_source_for_triple_pattern(tp, subject_rules, predicate_rules, object_rules)
         if not src_name:
@@ -1622,9 +1638,9 @@ def build_forward_provenance_program(
         if not src_decl:
             continue
 
-        lines.append(f'ProvTriple("{src_name}", s, p, o) :- {", ".join(atoms)}.')
+        lines.append(f'ProvTriple("{src_name}", s, p, o) :- {", ".join(atoms)}{target_guard}.')
         if head_pred == "quadruple":
-            lines.append(f'ProvQuad("{src_name}", s, p, o, g) :- {", ".join(atoms)}.')
+            lines.append(f'ProvQuad("{src_name}", s, p, o, g) :- {", ".join(atoms)}{target_guard}.')
 
         contributors: List[Tuple[str, str, int]] = []
         seen_contrib: Set[Tuple[str, str, int]] = set()
@@ -1668,7 +1684,7 @@ def build_forward_provenance_program(
 
         for col, val_var, pos in contributors:
             lines.append(
-                f'ProvContributor("{src_name}", s, p, o, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}.'
+                f'ProvContributor("{src_name}", s, p, o, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}{target_guard}.'
             )
 
         if head_pred == "quadruple" and len(head_args) >= 4:
@@ -1744,7 +1760,7 @@ def build_forward_provenance_program(
 
             for col, val_var, pos in quad_contributors:
                 lines.append(
-                    f'ProvQuadContributor("{src_name}", s, p, o, g, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}.'
+                    f'ProvQuadContributor("{src_name}", s, p, o, g, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}{target_guard}.'
                 )
 
         lines.append('')
@@ -1779,7 +1795,12 @@ def main():
         description="Generate forward-provenance or reverse Datalog programs from a forward mapping program."
     )
     parser.add_argument('input_D_file', help='Path to forward Datalog input file')
-    parser.add_argument('output_D_prime_file', help='Path to generated reverse Datalog output file')
+    parser.add_argument(
+        'output_D_prime_file',
+        nargs='?',
+        default=None,
+        help='Optional path to write the primary generated output for the selected mode'
+    )
     parser.add_argument(
         '--with-provenance',
         action='store_true',
@@ -1801,7 +1822,28 @@ def main():
         '--support-report',
         help='Optional path to write JSON support report (full/partial/unsupported)'
     )
+    parser.add_argument(
+        '--forward-output',
+        help='Optional extra path to write the forward/provenance program when using --mode forward'
+    )
+    parser.add_argument(
+        '--reverse-output',
+        help='Optional extra path to write the reverse program alongside the forward/provenance output'
+    )
+    parser.add_argument(
+        '--target-triples-file',
+        help='Optional path to a tab-separated file (s, p, o) used to limit provenance materialization to selected triples (--mode forward --with-provenance only)'
+    )
     args = parser.parse_args()
+
+    if args.mode == 'reverse' and args.forward_output:
+        parser.error('--forward-output is only supported with --mode forward')
+
+    if args.target_triples_file and (args.mode != 'forward' or not args.with_provenance):
+        parser.error('--target-triples-file requires --mode forward and --with-provenance')
+
+    if not args.output_D_prime_file and not args.forward_output and not args.reverse_output:
+        parser.error('at least one output path must be provided')
 
     in_file = args.input_D_file
     out_file = args.output_D_prime_file
@@ -1817,8 +1859,12 @@ def main():
         object_rules,
         triple_patterns,
     )
-    if args.mode == 'forward':
-        d_prime = build_forward_provenance_program(
+
+    forward_program = None
+    reverse_program = None
+
+    if args.mode == 'forward' or args.forward_output:
+        forward_program = build_forward_provenance_program(
             text,
             source_decls,
             subject_rules,
@@ -1827,9 +1873,11 @@ def main():
             triple_patterns,
             provenance_enabled=args.with_provenance,
             input_dir=os.path.dirname(os.path.abspath(in_file)),
+            target_triples_file=args.target_triples_file if hasattr(args, 'target_triples_file') else None,
         )
-    else:
-        d_prime = build_reverse_program(
+
+    if args.mode == 'reverse' or args.reverse_output:
+        reverse_program = build_reverse_program(
             source_decls,
             subject_rules,
             predicate_rules,
@@ -1840,8 +1888,26 @@ def main():
             recovery_mode=args.recovery_mode,
         )
 
-    with open(out_file, 'w', encoding='utf-8') as f:
-        f.write(d_prime)
+    if args.mode == 'forward':
+        primary_program = forward_program
+        primary_path = out_file or args.forward_output
+        if not primary_path and args.reverse_output:
+            primary_path = args.reverse_output
+    else:
+        primary_program = reverse_program
+        primary_path = out_file
+
+    if primary_path and primary_program is not None:
+        with open(primary_path, 'w', encoding='utf-8') as f:
+            f.write(primary_program)
+
+    if args.forward_output and forward_program is not None:
+        with open(args.forward_output, 'w', encoding='utf-8') as f:
+            f.write(forward_program)
+
+    if args.reverse_output and reverse_program is not None:
+        with open(args.reverse_output, 'w', encoding='utf-8') as f:
+            f.write(reverse_program)
 
     if args.support_report:
         with open(args.support_report, 'w', encoding='utf-8') as f:
@@ -1849,14 +1915,19 @@ def main():
 
     if args.mode == 'forward':
         if args.with_provenance:
-            print(f"Wrote forward provenance program to {out_file}")
+            print(f"Wrote forward provenance program to {primary_path}")
         else:
-            print(f"Wrote forward program to {out_file}")
+            print(f"Wrote forward program to {primary_path}")
     else:
         if args.with_provenance:
-            print(f"Wrote reverse program with provenance to {out_file}")
+            print(f"Wrote reverse program with provenance to {primary_path}")
         else:
-            print(f"Wrote reverse program to {out_file}")
+            print(f"Wrote reverse program to {primary_path}")
+
+    if args.forward_output:
+        print(f"Wrote forward program to {args.forward_output}")
+    if args.reverse_output:
+        print(f"Wrote reverse program to {args.reverse_output}")
     if args.support_report:
         print(f"Wrote support report to {args.support_report}")
 
