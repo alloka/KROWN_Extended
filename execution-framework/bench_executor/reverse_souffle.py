@@ -174,15 +174,42 @@ class ReverseSouffle(Container):
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
             reverse_cmd += f' --support-report "{support_path}"'
 
+        # Compile and execute the generated forward provenance program first
+        # so reverse can consume provenance facts as input evidence.
+        forward_exec_path = os.path.splitext(forward_program_path_out)[0]
+        forward_souffle_cmd = (
+            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
+            f'"{forward_program_path_out}" -F /data/shared -D /data/shared && '
+            f'"{forward_exec_path}"'
+        )
+
+        # Map forward provenance outputs to the filenames expected by reverse.
+        # If a provenance file is absent, create an empty placeholder so
+        # Souffle .input has a concrete file to read.
+        provenance_bridge_cmd = (
+            'cd /data/shared && '
+            'if [ -f ExplainContributor.facts ]; then cp ExplainContributor.facts ProvContributor.csv; '
+            'else : > ProvContributor.csv; fi && '
+            'if [ -f ExplainQuadContributor.facts ]; then cp ExplainQuadContributor.facts ProvQuadContributor.csv; '
+            'else : > ProvQuadContributor.csv; fi'
+        )
+
         # Compile the generated reverse program, then execute the compiled
         # binary so it actually emits output facts.
         reverse_exec_path = os.path.splitext(reverse_program_path)[0]
-        souffle_cmd = (
+        reverse_souffle_cmd = (
             f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
             f'"{reverse_program_path}" -F /data/shared -D /data/shared && '
             f'"{reverse_exec_path}"'
         )
 
-        full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {souffle_cmd}"'
+        if with_provenance:
+            full_cmd = (
+                f'bash -lc "{rulegen_cmd} && {reverse_cmd} && '
+                f'{forward_souffle_cmd} && {provenance_bridge_cmd} && '
+                f'{reverse_souffle_cmd}"'
+            )
+        else:
+            full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {reverse_souffle_cmd}"'
 
         return self._execute_with_timeout(full_cmd)
