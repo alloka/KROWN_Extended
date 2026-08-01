@@ -174,11 +174,13 @@ class ReverseSouffle(Container):
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
             reverse_cmd += f' --support-report "{support_path}"'
 
-        # reverseR2RML emits external functor calls; compile mode must link
-        # against the bundled functor library.
+        # Compile the generated reverse program, then execute the compiled
+        # binary so it actually emits output facts.
+        reverse_exec_path = os.path.splitext(reverse_program_path)[0]
         souffle_cmd = (
-            f'souffle -L /souffle/lib -l functors -c "{reverse_program_path}" '
-            f'-F /data/shared -D /data/shared'
+            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
+            f'"{reverse_program_path}" -F /data/shared -D /data/shared && '
+            f'"{reverse_exec_path}"'
         )
 
         full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {souffle_cmd}"'
