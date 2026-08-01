@@ -1116,7 +1116,11 @@ def build_reverse_program(
     lines.append('')
 
     if provenance_enabled:
-        lines.append('// Optional provenance output')
+        lines.append('// Optional provenance input/output')
+        lines.append('.decl ProvContributor(source_rel:symbol, s:symbol, p:symbol, o:symbol, col:symbol, val:symbol, pos:number)')
+        lines.append('.input ProvContributor(filename="ProvContributor.csv", delimiter="\\t")')
+        lines.append('.decl ProvQuadContributor(source_rel:symbol, s:symbol, p:symbol, o:symbol, g:symbol, col:symbol, val:symbol, pos:number)')
+        lines.append('.input ProvQuadContributor(filename="ProvQuadContributor.csv", delimiter="\\t")')
         lines.append('.decl Prov_Evidence(source_rel:symbol, s:symbol, p:symbol, o:symbol)')
         lines.append('.decl Prov_Evidence_Quad(source_rel:symbol, s:symbol, p:symbol, o:symbol, g:symbol)')
         lines.append('.decl Prov_Column(source_rel:symbol, s:symbol, p:symbol, o:symbol, col:symbol, val:symbol, pos:number)')
@@ -1415,6 +1419,20 @@ def build_reverse_program(
 
         needed_for_head: Set[str] = set(v for v in col_var_for_source.values() if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', v))
         body_atoms: List[str] = build_parse_atoms_with_needed(needed_for_head)
+        provenance_fallback_cols: Set[str] = set()
+
+        if provenance_enabled:
+            for c in source.columns:
+                if c in col_var_for_source:
+                    continue
+                val_var = f'prov_{c}'
+                col_var_for_source[c] = val_var
+                provenance_fallback_cols.add(c)
+                src_pos = {c2: i for i, c2 in enumerate(source.columns)}
+                provenance_cols.append((c, val_var, src_pos.get(c, -1)))
+
+        needed_for_head = set(v for v in col_var_for_source.values() if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', v))
+        body_atoms = build_parse_atoms_with_needed(needed_for_head)
 
         head_args = []
         is_complete = True
@@ -1502,12 +1520,25 @@ def build_reverse_program(
                         else:
                             lines.append(f'{tuple_rel_name}(s, {tuple_args}) :- {", ".join(tuple_parse_atoms)}.')
 
+                variant_body_atoms = list(body_atoms)
+                if provenance_enabled:
+                    for c in sorted(provenance_fallback_cols):
+                        val_var = col_var_for_source[c]
+                        if tp.head_kind == 'quadruple':
+                            variant_body_atoms.append(
+                                f'ProvQuadContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, {graph_term_expr}, "{c}", {val_var}, _)'
+                            )
+                        else:
+                            variant_body_atoms.append(
+                                f'ProvContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, "{c}", {val_var}, _)'
+                            )
+
                 if tp.head_kind == 'quadruple':
-                    base_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + body_atoms
-                    prov_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + build_parse_atoms_with_needed(set())
+                    base_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + variant_body_atoms
+                    prov_atoms = [f'quadruple({triple_s}, {triple_p}, {triple_o}, {graph_term_expr})'] + variant_body_atoms
                 else:
-                    base_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + body_atoms
-                    prov_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + build_parse_atoms_with_needed(set())
+                    base_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + variant_body_atoms
+                    prov_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + variant_body_atoms
                 if guard_variants:
                     for gp, go in guard_variants:
                         atoms = base_atoms + [f'triple({triple_s}, {gp}, {go})']
