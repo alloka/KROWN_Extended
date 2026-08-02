@@ -1937,7 +1937,22 @@ def build_forward_provenance_program(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate forward-provenance or reverse Datalog programs from a forward mapping program."
+        description="Generate forward-provenance or reverse Datalog programs from a forward mapping program.",
+        epilog=(
+            "Recommended end-to-end provenance flow (forward-first):\n"
+            "  1) Generate both programs:\n"
+            "     python reverseR2RML.py Datalog_rules.rs Datalog_forward_with_prov.rs "
+            "--mode forward --with-provenance --reverse-output Datalog_reverse.rs\n"
+            "  2) Run forward program to materialize Explain* facts.\n"
+            "  3) Feed ExplainContributor(.facts) -> ProvContributor.csv and "
+            "ExplainQuadContributor(.facts) -> ProvQuadContributor.csv.\n"
+            "  4) Run reverse program.\n\n"
+            "Selective provenance variant:\n"
+            "  python reverseR2RML.py Datalog_rules.rs Datalog_forward_with_prov.rs "
+            "--mode forward --with-provenance --reverse-output Datalog_reverse.rs "
+            "--target-triples-file triple.csv"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('input_D_file', help='Path to forward Datalog input file')
     parser.add_argument(
