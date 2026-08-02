@@ -92,17 +92,17 @@ class ReverseSouffle(Container):
             Output reverse Datalog file path relative to /data/shared.
         forward_program_file : str
             Output forward/provenance Datalog file path relative to
-            /data/shared when selective provenance is enabled.
+            /data/shared. Used whenever ``with_provenance=True``.
         support_report : str, optional
             Optional JSON report output path relative to /data/shared.
         with_provenance : bool
-            Enable provenance relations in the reverse program. Defaults to
-            False (normal reverse mode).
+            Enable strict forward-first provenance pipeline. When enabled,
+            the runner generates forward+reverse programs, executes forward to
+            materialize Explain* evidence, then executes reverse.
         target_triples_file : str, optional
             Optional tab-separated file (s, p, o) relative to /data/shared.
-            When provided, reverse generation is routed through
-            ``--mode forward --with-provenance --reverse-output`` so
-            provenance is materialized only for listed triples.
+            Optional filter for forward provenance materialization. When
+            provided, only listed triples receive provenance facts.
         """
         del output_file  # currently unused in reverse mode
         del serialization  # currently unused in reverse mode
@@ -145,30 +145,28 @@ class ReverseSouffle(Container):
             f'-m "{mapping_path}"{rulegen_suffix}'
         )
 
-        if target_triples_file:
-            if not with_provenance:
-                raise ValueError(
-                    'target_triples_file requires with_provenance=True '
-                    '(reverseR2RML requires --mode forward --with-provenance)'
-                )
-
-            target_path = (
-                f"/data/shared/{target_triples_file.replace('\\', '/').lstrip('/')}"
-            )
+        if with_provenance:
             reverse_cmd = (
                 'python3 /souffle/reverseR2RML.py '
                 f'"{forward_program_path}" "{forward_program_path_out}" '
                 '--mode forward --with-provenance '
-                f'--reverse-output "{reverse_program_path}" '
-                f'--target-triples-file "{target_path}"'
+                f'--reverse-output "{reverse_program_path}"'
             )
+            if target_triples_file:
+                target_path = (
+                    f"/data/shared/{target_triples_file.replace('\\', '/').lstrip('/')}"
+                )
+                reverse_cmd += f' --target-triples-file "{target_path}"'
         else:
+            if target_triples_file:
+                raise ValueError(
+                    'target_triples_file requires with_provenance=True '
+                    '(reverseR2RML requires --mode forward --with-provenance)'
+                )
             reverse_cmd = (
                 'python3 /souffle/reverseR2RML.py '
                 f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
             )
-            if with_provenance:
-                reverse_cmd += ' --with-provenance'
 
         if support_report:
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
