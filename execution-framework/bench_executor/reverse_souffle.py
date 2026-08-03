@@ -99,17 +99,89 @@ class ReverseSouffle(Container):
     def _required_artifacts(self, reverse_program_file: str,
                             forward_program_file: str,
                             support_report: Optional[str],
-                            with_provenance: bool) -> list[tuple[str, str]]:
+                            with_provenance: bool,
+                            include_forward_program: bool) -> list[tuple[str, str]]:
         artifacts = [
             ('reverse Datalog program', self._shared_host_path(reverse_program_file)),
         ]
-        if with_provenance:
+        if with_provenance and include_forward_program:
             artifacts.append(
                 ('forward provenance Datalog program', self._shared_host_path(forward_program_file))
             )
         if support_report:
             artifacts.append(('support report', self._shared_host_path(support_report)))
         return artifacts
+
+    def execute_forward_provenance(self, mapping_file: str, output_file: str,
+                                   serialization: str,
+                                   reverse_program_file: str = 'Datalog_reverse.rs',
+                                   forward_program_file: str = 'Datalog_forward_with_prov.rs',
+                                   support_report: Optional[str] = None,
+                                   target_triples_file: Optional[str] = None,
+                                   rdb_username: Optional[str] = None,
+                                   rdb_password: Optional[str] = None,
+                                   rdb_host: Optional[str] = None,
+                                   rdb_port: Optional[int] = None,
+                                   rdb_name: Optional[str] = None,
+                                   rdb_type: Optional[str] = None) -> bool:
+        """Run only the forward-provenance stage (no reverse Souffle execution).
+
+        This method is useful when measuring forward-stage overhead in isolation.
+        """
+        return self.execute_mapping(
+            mapping_file=mapping_file,
+            output_file=output_file,
+            serialization=serialization,
+            reverse_program_file=reverse_program_file,
+            forward_program_file=forward_program_file,
+            support_report=support_report,
+            with_provenance=True,
+            target_triples_file=target_triples_file,
+            rdb_username=rdb_username,
+            rdb_password=rdb_password,
+            rdb_host=rdb_host,
+            rdb_port=rdb_port,
+            rdb_name=rdb_name,
+            rdb_type=rdb_type,
+            run_forward_stage=True,
+            run_reverse_stage=False,
+        )
+
+    def execute_reverse_only(self, mapping_file: str, output_file: str,
+                             serialization: str,
+                             reverse_program_file: str = 'Datalog_reverse.rs',
+                             forward_program_file: str = 'Datalog_forward_with_prov.rs',
+                             support_report: Optional[str] = None,
+                             with_provenance: bool = False,
+                             rdb_username: Optional[str] = None,
+                             rdb_password: Optional[str] = None,
+                             rdb_host: Optional[str] = None,
+                             rdb_port: Optional[int] = None,
+                             rdb_name: Optional[str] = None,
+                             rdb_type: Optional[str] = None) -> bool:
+        """Run only the reverse stage.
+
+        When ``with_provenance=True``, this mode expects provenance inputs
+        (ProvContributor.csv / ProvQuadContributor.csv) to already exist.
+        """
+        return self.execute_mapping(
+            mapping_file=mapping_file,
+            output_file=output_file,
+            serialization=serialization,
+            reverse_program_file=reverse_program_file,
+            forward_program_file=forward_program_file,
+            support_report=support_report,
+            with_provenance=with_provenance,
+            target_triples_file=None,
+            rdb_username=rdb_username,
+            rdb_password=rdb_password,
+            rdb_host=rdb_host,
+            rdb_port=rdb_port,
+            rdb_name=rdb_name,
+            rdb_type=rdb_type,
+            run_forward_stage=False,
+            run_reverse_stage=True,
+        )
 
     def _validate_artifacts(self, artifacts: list[tuple[str, str]],
                             stage_name: str) -> bool:
@@ -167,6 +239,8 @@ class ReverseSouffle(Container):
                         support_report: Optional[str] = None,
                         with_provenance: bool = False,
                         target_triples_file: Optional[str] = None,
+                        run_forward_stage: bool = True,
+                        run_reverse_stage: bool = True,
                         rdb_username: Optional[str] = None,
                         rdb_password: Optional[str] = None,
                         rdb_host: Optional[str] = None,
@@ -198,14 +272,29 @@ class ReverseSouffle(Container):
             Optional tab-separated file (s, p, o) relative to /data/shared.
             Optional filter for forward provenance materialization. When
             provided, only listed triples receive provenance facts.
+        run_forward_stage : bool
+            When True, execute forward provenance Souffle stage and bridge
+            Explain* outputs into reverse provenance input files.
+        run_reverse_stage : bool
+            When True, execute reverse Souffle stage.
         """
         del output_file  # currently unused in reverse mode
         del serialization  # currently unused in reverse mode
+
+        if not run_forward_stage and not run_reverse_stage:
+            raise ValueError('At least one stage must be enabled')
+
+        if target_triples_file and not run_forward_stage:
+            raise ValueError(
+                'target_triples_file is only supported when run_forward_stage=True'
+            )
+
         required_artifacts = self._required_artifacts(
             reverse_program_file,
             forward_program_file,
             support_report,
             with_provenance,
+            include_forward_program=with_provenance and run_forward_stage,
         )
 
         max_heap = int(psutil.virtual_memory().total * 0.5)
@@ -259,7 +348,7 @@ class ReverseSouffle(Container):
                 self._shared_host_path(staged_target_path),
             )
 
-        if with_provenance:
+        if with_provenance and run_forward_stage:
             reverse_cmd = (
                 f'python3 {self._reverse_script_container_path} '
                 f'"{forward_program_path}" "{forward_program_path_out}" '
@@ -275,9 +364,10 @@ class ReverseSouffle(Container):
                     'target_triples_file requires with_provenance=True '
                     '(reverseR2RML requires --mode forward --with-provenance)'
                 )
+            reverse_mode_flag = '--mode reverse --with-provenance' if with_provenance else '--mode reverse'
             reverse_cmd = (
                 f'python3 {self._reverse_script_container_path} '
-                f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
+                f'"{forward_program_path}" "{reverse_program_path}" {reverse_mode_flag}'
             )
 
         if support_report:
@@ -287,7 +377,7 @@ class ReverseSouffle(Container):
         # Execute the generated forward provenance program directly so the
         # container lifecycle tracks the actual Souffle process end-to-end.
         forward_souffle_cmd = (
-            f'cd /data/shared && souffle -L /souffle/lib -l functors '
+            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
             f'"{forward_program_path_out}" -F /data/shared -D /data/shared'
         )
 
@@ -309,15 +399,17 @@ class ReverseSouffle(Container):
         # Souffle .input has a concrete file to read.
         provenance_bridge_cmd = (
             'cd /data/shared && '
-            'if [ -f ExplainContributor.facts ]; then cp ExplainContributor.facts ProvContributor.csv; '
+            'if [ -f ExplainContributor.csv ]; then cp ExplainContributor.csv ProvContributor.csv; '
+            'elif [ -f ExplainContributor.facts ]; then cp ExplainContributor.facts ProvContributor.csv; '
             'else : > ProvContributor.csv; fi && '
-            'if [ -f ExplainQuadContributor.facts ]; then cp ExplainQuadContributor.facts ProvQuadContributor.csv; '
+            'if [ -f ExplainQuadContributor.csv ]; then cp ExplainQuadContributor.csv ProvQuadContributor.csv; '
+            'elif [ -f ExplainQuadContributor.facts ]; then cp ExplainQuadContributor.facts ProvQuadContributor.csv; '
             'else : > ProvQuadContributor.csv; fi'
         )
 
         # Execute the generated reverse program directly for the same reason.
         reverse_souffle_cmd = (
-            f'cd /data/shared && souffle -L /souffle/lib -l functors '
+            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
             f'"{reverse_program_path}" -F /data/shared -D /data/shared'
         )
 
@@ -337,7 +429,7 @@ class ReverseSouffle(Container):
         ):
             return False
 
-        if with_provenance:
+        if with_provenance and run_forward_stage:
             if not self._run_stage(
                 'forward provenance execution',
                 forward_souffle_cmd,
@@ -352,11 +444,12 @@ class ReverseSouffle(Container):
             ):
                 return False
 
-        if not self._run_stage(
-            'reverse execution',
-            reverse_souffle_cmd,
-            'reverse_done',
-        ):
-            return False
+        if run_reverse_stage:
+            if not self._run_stage(
+                'reverse execution',
+                reverse_souffle_cmd,
+                'reverse_done',
+            ):
+                return False
 
         return True
