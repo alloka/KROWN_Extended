@@ -236,8 +236,11 @@ class Container():
                 else:
                     self._logger.debug(line)
 
+        stopped = self.stop()
+        if not stopped:
+            self._logger.warning(f'Unable to stop container "{self._name}" cleanly after execution')
+
         if status_code == 0:
-            self.stop()
             return True
 
         self._logger.error('Command failed while waiting for exit with status '

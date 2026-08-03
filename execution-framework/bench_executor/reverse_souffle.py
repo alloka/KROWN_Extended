@@ -10,6 +10,7 @@ an explicit reverse pipeline:
 """
 
 import os
+import shutil
 import psutil
 import threading
 from typing import Optional
@@ -23,18 +24,39 @@ TIMEOUT = 3 * 3600  # 3 hours
 class ReverseSouffle(Container):
     """Souffle container for reverse R2RML execution."""
 
+    _MARKER_PREFIX = '.reverse_souffle_'
+
+    @staticmethod
+    def _resolve_reverse_script(config_path: str) -> Optional[str]:
+        candidates = [
+            os.path.join(config_path, 'reverseR2RML.py'),
+            os.path.join(os.getcwd(), 'reverseR2RML.py'),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+        return None
+
     def __init__(self, data_path: str, config_path: str, directory: str,
                  verbose: bool):
         self._data_path = os.path.abspath(data_path)
         self._config_path = os.path.abspath(config_path)
         self._logger = Logger(__name__, directory, verbose)
         self._verbose = verbose
+        self._reverse_script_host_path = self._resolve_reverse_script(self._config_path)
+        self._reverse_script_container_path = '/souffle/reverseR2RML.py'
 
         os.makedirs(os.path.join(self._data_path, 'souffle'), exist_ok=True)
+        volumes = [f'{self._data_path}/souffle:/data',
+                   f'{self._data_path}/shared:/data/shared']
+        if self._reverse_script_host_path is not None:
+            volumes.append(
+                f'{os.path.dirname(self._reverse_script_host_path)}:/workspace-tools'
+            )
+            self._reverse_script_container_path = '/workspace-tools/reverseR2RML.py'
         super().__init__(f'alloka/souffle:v{VERSION}', 'ReverseSouffle',
                          self._logger,
-                         volumes=[f'{self._data_path}/souffle:/data',
-                                  f'{self._data_path}/shared:/data/shared'])
+                         volumes=volumes)
 
     @property
     def root_mount_directory(self) -> str:
@@ -64,6 +86,79 @@ class ReverseSouffle(Container):
     def execute(self, arguments: list) -> bool:
         command = ' '.join(arguments)
         return self._execute_with_timeout(command)
+
+    def _shared_host_path(self, relative_path: str) -> str:
+        return os.path.join(self._data_path, 'shared', relative_path)
+
+    def _marker_host_path(self, name: str) -> str:
+        return self._shared_host_path(f'{self._MARKER_PREFIX}{name}')
+
+    def _container_marker_path(self, name: str) -> str:
+        return f'/data/shared/{self._MARKER_PREFIX}{name}'
+
+    def _required_artifacts(self, reverse_program_file: str,
+                            forward_program_file: str,
+                            support_report: Optional[str],
+                            with_provenance: bool) -> list[tuple[str, str]]:
+        artifacts = [
+            ('reverse Datalog program', self._shared_host_path(reverse_program_file)),
+        ]
+        if with_provenance:
+            artifacts.append(
+                ('forward provenance Datalog program', self._shared_host_path(forward_program_file))
+            )
+        if support_report:
+            artifacts.append(('support report', self._shared_host_path(support_report)))
+        return artifacts
+
+    def _validate_artifacts(self, artifacts: list[tuple[str, str]],
+                            stage_name: str) -> bool:
+        missing_artifacts = [label for label, path in artifacts if not os.path.exists(path)]
+        if missing_artifacts:
+            self._logger.error(
+                f'ReverseSouffle {stage_name} stage finished without required output artifacts. '
+                f'Missing: {", ".join(missing_artifacts)}'
+            )
+            return False
+
+        empty_artifacts = [
+            label for label, path in artifacts
+            if os.path.isfile(path) and os.path.getsize(path) == 0
+        ]
+        if empty_artifacts:
+            self._logger.error(
+                f'ReverseSouffle {stage_name} stage produced empty output artifacts. '
+                f'Empty: {", ".join(empty_artifacts)}'
+            )
+            return False
+
+        return True
+
+    def _run_stage(self, stage_name: str, command: str, marker_name: str,
+                   required_artifacts: Optional[list[tuple[str, str]]] = None) -> bool:
+        marker_host_path = self._marker_host_path(marker_name)
+        try:
+            os.remove(marker_host_path)
+        except FileNotFoundError:
+            pass
+
+        wrapped_command = (
+            f'bash -lc "{command} && : > \"{self._container_marker_path(marker_name)}\""'
+        )
+        if not self._execute_with_timeout(wrapped_command):
+            self._logger.error(f'ReverseSouffle {stage_name} stage failed')
+            return False
+
+        if not os.path.exists(marker_host_path):
+            self._logger.error(
+                f'ReverseSouffle did not complete the {stage_name} stage. '
+                f'Missing completion marker: {marker_name}'
+            )
+            return False
+
+        if required_artifacts:
+            return self._validate_artifacts(required_artifacts, stage_name)
+        return True
 
     def execute_mapping(self, mapping_file: str, output_file: str,
                         serialization: str,
@@ -106,6 +201,12 @@ class ReverseSouffle(Container):
         """
         del output_file  # currently unused in reverse mode
         del serialization  # currently unused in reverse mode
+        required_artifacts = self._required_artifacts(
+            reverse_program_file,
+            forward_program_file,
+            support_report,
+            with_provenance,
+        )
 
         max_heap = int(psutil.virtual_memory().total * 0.5)
 
@@ -145,17 +246,28 @@ class ReverseSouffle(Container):
             f'-m "{mapping_path}"{rulegen_suffix}'
         )
 
+        staged_target_path = None
+        if target_triples_file:
+            source_target_path = self._shared_host_path(target_triples_file)
+            if not os.path.exists(source_target_path):
+                raise FileNotFoundError(
+                    f'target_triples_file not found: {source_target_path}'
+                )
+            staged_target_path = '__reverse_target_triples_input.csv'
+            shutil.copyfile(
+                source_target_path,
+                self._shared_host_path(staged_target_path),
+            )
+
         if with_provenance:
             reverse_cmd = (
-                'python3 /souffle/reverseR2RML.py '
+                f'python3 {self._reverse_script_container_path} '
                 f'"{forward_program_path}" "{forward_program_path_out}" '
                 '--mode forward --with-provenance '
                 f'--reverse-output "{reverse_program_path}"'
             )
             if target_triples_file:
-                target_path = (
-                    f"/data/shared/{target_triples_file.replace('\\', '/').lstrip('/')}"
-                )
+                target_path = f'/data/shared/{staged_target_path}'
                 reverse_cmd += f' --target-triples-file "{target_path}"'
         else:
             if target_triples_file:
@@ -164,7 +276,7 @@ class ReverseSouffle(Container):
                     '(reverseR2RML requires --mode forward --with-provenance)'
                 )
             reverse_cmd = (
-                'python3 /souffle/reverseR2RML.py '
+                f'python3 {self._reverse_script_container_path} '
                 f'"{forward_program_path}" "{reverse_program_path}" --mode reverse'
             )
 
@@ -172,13 +284,11 @@ class ReverseSouffle(Container):
             support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
             reverse_cmd += f' --support-report "{support_path}"'
 
-        # Compile and execute the generated forward provenance program first
-        # so reverse can consume provenance facts as input evidence.
-        forward_exec_path = os.path.splitext(forward_program_path_out)[0]
+        # Execute the generated forward provenance program directly so the
+        # container lifecycle tracks the actual Souffle process end-to-end.
         forward_souffle_cmd = (
-            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
-            f'"{forward_program_path_out}" -F /data/shared -D /data/shared && '
-            f'"{forward_exec_path}"'
+            f'cd /data/shared && souffle -L /souffle/lib -l functors '
+            f'"{forward_program_path_out}" -F /data/shared -D /data/shared'
         )
 
         # Ensure the reverse stage consumes the RDF outputs generated by the
@@ -205,22 +315,48 @@ class ReverseSouffle(Container):
             'else : > ProvQuadContributor.csv; fi'
         )
 
-        # Compile the generated reverse program, then execute the compiled
-        # binary so it actually emits output facts.
-        reverse_exec_path = os.path.splitext(reverse_program_path)[0]
+        # Execute the generated reverse program directly for the same reason.
         reverse_souffle_cmd = (
-            f'cd /data/shared && souffle -L /souffle/lib -l functors -c '
-            f'"{reverse_program_path}" -F /data/shared -D /data/shared && '
-            f'"{reverse_exec_path}"'
+            f'cd /data/shared && souffle -L /souffle/lib -l functors '
+            f'"{reverse_program_path}" -F /data/shared -D /data/shared'
         )
 
-        if with_provenance:
-            full_cmd = (
-                f'bash -lc "{rulegen_cmd} && {reverse_cmd} && '
-                f'{forward_souffle_cmd} && {input_bridge_cmd} && {provenance_bridge_cmd} && '
-                f'{reverse_souffle_cmd}"'
-            )
-        else:
-            full_cmd = f'bash -lc "{rulegen_cmd} && {reverse_cmd} && {reverse_souffle_cmd}"'
+        if not self._run_stage(
+            'rule generation',
+            rulegen_cmd,
+            'rulegen_done',
+            [('forward Datalog program', self._shared_host_path('Datalog_rules.rs'))],
+        ):
+            return False
 
-        return self._execute_with_timeout(full_cmd)
+        if not self._run_stage(
+            'program generation',
+            reverse_cmd,
+            'codegen_done',
+            required_artifacts,
+        ):
+            return False
+
+        if with_provenance:
+            if not self._run_stage(
+                'forward provenance execution',
+                forward_souffle_cmd,
+                'forward_done',
+            ):
+                return False
+
+            if not self._run_stage(
+                'input bridging',
+                f'{input_bridge_cmd} && {provenance_bridge_cmd}',
+                'bridge_done',
+            ):
+                return False
+
+        if not self._run_stage(
+            'reverse execution',
+            reverse_souffle_cmd,
+            'reverse_done',
+        ):
+            return False
+
+        return True

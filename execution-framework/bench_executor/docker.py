@@ -62,7 +62,17 @@ class Docker():
         self._logger.debug(f'Waiting for Docker container: {cmd}')
         status_code, output = subprocess.getstatusoutput(cmd)
 
-        return status_code
+        if status_code != 0:
+            return status_code
+
+        try:
+            return int(output.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            self._logger.error(
+                'Unable to parse container exit code from docker wait output: '
+                f'{output}'
+            )
+            return 1
 
     def stop(self, container_id: str) -> bool:
         """Stop a running Docker container.
@@ -182,14 +192,17 @@ class Docker():
         # Avoid race condition between removing and starting the same container
         removing = False
         while (True):
-            cmd = f'docker ps -a | grep "{name}"'
+            cmd = (
+                f'docker ps -a --filter "name=^{name}$" '
+                '--format "{{.Names}}"'
+            )
             status_code, output = subprocess.getstatusoutput(cmd)
-            if status_code == 0 and not removing:
+            if status_code == 0 and output.strip() and not removing:
                 cmd = f'docker stop "{name}" && docker rm "{name}"'
                 subprocess.getstatusoutput(cmd)
                 self._logger.debug(f'Schedule container "{name}" for removal')
                 removing = True
-            elif status_code != 0:
+            elif status_code != 0 or not output.strip():
                 break
             sleep(0.1)
 
@@ -229,9 +242,12 @@ class Docker():
         """
 
         # Check if network exist
-        cmd = f'docker network ls | grep "{network}"'
+        cmd = (
+            f'docker network ls --filter "name=^{network}$" '
+            '--format "{{.Name}}"'
+        )
         status_code, output = subprocess.getstatusoutput(cmd)
-        if status_code == 0:
+        if status_code == 0 and output.strip():
             return True
 
         # Create it as it does not exist yet

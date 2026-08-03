@@ -505,6 +505,50 @@ def extract_decl(line: str) -> Optional[SourceDecl]:
     return SourceDecl(pred, cols)
 
 
+def normalize_source_relation_identifiers(text: str) -> str:
+    """
+    Rewrite source relation identifiers to legal Souffle identifiers.
+
+    Some generated mappings can emit source predicate names that begin with a
+    digit (e.g. ``18DsveAUP5_lt0``), which Souffle rejects. This pass detects
+    source-like ``.decl ..._ltN`` names and rewrites all token occurrences to a
+    safe form prefixed with ``S_``.
+    """
+    lines = text.splitlines()
+    candidates: Set[str] = set()
+
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r'^\.decl\s+([A-Za-z0-9_]+_lt\d+)\s*\(', stripped)
+        if not m:
+            continue
+        pred = m.group(1)
+        if pred in ("triple", "quadruple"):
+            continue
+        if pred.startswith("Subject") or pred.startswith("Predicate") or pred.startswith("Object"):
+            continue
+        if pred.startswith("eval_"):
+            continue
+        candidates.add(pred)
+
+    rename_map: Dict[str, str] = {}
+    for pred in sorted(candidates):
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', pred):
+            continue
+        safe = f'S_{pred}'
+        while safe in candidates or safe in rename_map.values():
+            safe = f'S_{safe}'
+        rename_map[pred] = safe
+
+    if not rename_map:
+        return text
+
+    normalized = text
+    for old, new in rename_map.items():
+        normalized = re.sub(rf'\b{re.escape(old)}\b', new, normalized)
+    return normalized
+
+
 def parse_datalog(text: str):
     """
     Parse the forward Datalog program D and extract:
@@ -1557,6 +1601,15 @@ def build_reverse_program(
                             for col, val_var, pos in provenance_cols:
                                 v_needed = {val_var} if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', val_var) else set()
                                 v_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + build_parse_atoms_with_needed(v_needed) + [f'triple({triple_s}, {gp}, {go})']
+                                if col in provenance_fallback_cols:
+                                    if tp.head_kind == 'quadruple':
+                                        v_atoms.append(
+                                            f'ProvQuadContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, {graph_term_expr}, "{col}", {val_var}, _)'
+                                        )
+                                    else:
+                                        v_atoms.append(
+                                            f'ProvContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, "{col}", {val_var}, _)'
+                                        )
                                 lines.append(
                                     f'Prov_Column("{src_name}", {triple_s}, {triple_p}, {triple_o}, "{col}", {val_var}, {pos}) :- {", ".join(v_atoms)}.'
                                 )
@@ -1575,6 +1628,15 @@ def build_reverse_program(
                         for col, val_var, pos in provenance_cols:
                             v_needed = {val_var} if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', val_var) else set()
                             v_atoms = [f'triple({triple_s}, {triple_p}, {triple_o})'] + build_parse_atoms_with_needed(v_needed)
+                            if col in provenance_fallback_cols:
+                                if tp.head_kind == 'quadruple':
+                                    v_atoms.append(
+                                        f'ProvQuadContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, {graph_term_expr}, "{col}", {val_var}, _)'
+                                    )
+                                else:
+                                    v_atoms.append(
+                                        f'ProvContributor("{src_name}", {triple_s}, {triple_p}, {triple_o}, "{col}", {val_var}, _)'
+                                    )
                             lines.append(
                                 f'Prov_Column("{src_name}", {triple_s}, {triple_p}, {triple_o}, "{col}", {val_var}, {pos}) :- {", ".join(v_atoms)}.'
                             )
@@ -1819,6 +1881,24 @@ def build_forward_provenance_program(
         subj = subject_rules.get(tp.subject_pred) if tp.subject_pred else None
         pred = predicate_rules.get(tp.predicate_pred) if tp.predicate_pred else None
         obj = object_rules.get(tp.object_pred) if tp.object_pred else None
+        graph = graph_rules.get(tp.graph_pred) if tp.graph_pred else None
+
+        source_atom_args: Optional[List[str]] = None
+        for rule in (subj, pred, obj, graph):
+            if rule is None:
+                continue
+            if rule.source_name != src_name:
+                continue
+            if len(rule.source_args) != len(src_decl.columns):
+                continue
+            source_atom_args = rule.source_args
+            break
+
+        contributor_atoms = list(atoms)
+        if source_atom_args is not None:
+            contributor_source_atom = f'{src_name}({", ".join(source_atom_args)})'
+            if contributor_source_atom not in contributor_atoms:
+                contributor_atoms.append(contributor_source_atom)
 
         if subj:
             collect_contributors(subj.source_args, subj.parts)
@@ -1829,7 +1909,7 @@ def build_forward_provenance_program(
 
         for col, val_var, pos in contributors:
             lines.append(
-                f'ProvContributor("{src_name}", s, p, o, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}{target_guard}.'
+                f'ProvContributor("{src_name}", s, p, o, "{col}", {val_var}, {pos}) :- {", ".join(contributor_atoms)}{target_guard}.'
             )
 
         if head_pred == "quadruple" and len(head_args) >= 4:
@@ -1848,17 +1928,8 @@ def build_forward_provenance_program(
 
             if is_identifier(g_term):
                 # Direct source-variable graph map.
-                src_atom_args: Optional[List[str]] = None
-                for a in body_atoms:
-                    try:
-                        bp, bargs = parse_atom(a)
-                    except Exception:
-                        continue
-                    if bp == src_name:
-                        src_atom_args = bargs
-                        break
-                if src_atom_args:
-                    for idx, v in enumerate(src_atom_args):
+                if source_atom_args:
+                    for idx, v in enumerate(source_atom_args):
                         if v == g_term and idx < len(src_decl.columns):
                             add_quad_contrib(src_decl.columns[idx], g_term, idx)
 
@@ -1905,7 +1976,7 @@ def build_forward_provenance_program(
 
             for col, val_var, pos in quad_contributors:
                 lines.append(
-                    f'ProvQuadContributor("{src_name}", s, p, o, g, "{col}", {val_var}, {pos}) :- {", ".join(atoms)}{target_guard}.'
+                    f'ProvQuadContributor("{src_name}", s, p, o, g, "{col}", {val_var}, {pos}) :- {", ".join(contributor_atoms)}{target_guard}.'
                 )
 
         lines.append('')
@@ -2010,6 +2081,8 @@ def main():
 
     with open(in_file, 'r', encoding='utf-8') as f:
         text = f.read()
+
+    text = normalize_source_relation_identifiers(text)
 
     source_decls, subject_rules, predicate_rules, object_rules, graph_rules, triple_patterns = parse_datalog(text)
     support_report = compute_support_report(
