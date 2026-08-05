@@ -33,7 +33,7 @@ class ContainerManager():
         name : str
             Name of the network
         """
-        self._docker.create_network(name)
+        return self._docker.create_network(name)
 
 
 class Container():
@@ -78,7 +78,10 @@ class Container():
         self._logger = logger
 
         # create network if not exist
-        self._manager.create_network(NETWORK_NAME)
+        if not self._manager.create_network(NETWORK_NAME):
+            self._logger.error(
+                f'Unable to initialize Docker network "{NETWORK_NAME}"'
+            )
 
     @property
     def started(self) -> bool:

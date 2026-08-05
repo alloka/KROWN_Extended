@@ -164,5 +164,15 @@ class Souffle(Container):
             f"-F /data/shared -D /data/shared"
         )
         full_cmd = f'bash -lc "{rulegen_cmd} && {souffle_cmd}"'
+        if not self._execute_with_timeout(full_cmd):
+            return False
 
-        return self._execute_with_timeout(full_cmd)
+        generated_program = os.path.join(self._data_path, 'shared', 'Datalog_rules.rs')
+        if not os.path.exists(generated_program) or os.path.getsize(generated_program) == 0:
+            self._logger.error(
+                'Souffle rule generation did not produce a non-empty '
+                'Datalog_rules.rs artifact'
+            )
+            return False
+
+        return True

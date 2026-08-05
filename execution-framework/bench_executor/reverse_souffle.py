@@ -299,13 +299,21 @@ class ReverseSouffle(Container):
 
         max_heap = int(psutil.virtual_memory().total * 0.5)
 
-        mapping_path = f"/data/shared/{mapping_file.replace('\\', '/').lstrip('/')}"
+        normalized_mapping_file = mapping_file.replace('\\', '/').lstrip('/')
+        normalized_reverse_program_file = (
+            reverse_program_file.replace('\\', '/').lstrip('/')
+        )
+        normalized_forward_program_file = (
+            forward_program_file.replace('\\', '/').lstrip('/')
+        )
+
+        mapping_path = f"/data/shared/{normalized_mapping_file}"
         forward_program_path = '/data/shared/Datalog_rules.rs'
         reverse_program_path = (
-            f"/data/shared/{reverse_program_file.replace('\\', '/').lstrip('/')}"
+            f"/data/shared/{normalized_reverse_program_file}"
         )
         forward_program_path_out = (
-            f"/data/shared/{forward_program_file.replace('\\', '/').lstrip('/')}"
+            f"/data/shared/{normalized_forward_program_file}"
         )
 
         rulegen_args: list[str] = []
@@ -371,7 +379,8 @@ class ReverseSouffle(Container):
             )
 
         if support_report:
-            support_path = f"/data/shared/{support_report.replace('\\', '/').lstrip('/')}"
+            normalized_support_report = support_report.replace('\\', '/').lstrip('/')
+            support_path = f"/data/shared/{normalized_support_report}"
             reverse_cmd += f' --support-report "{support_path}"'
 
         # Execute the generated forward provenance program directly so the

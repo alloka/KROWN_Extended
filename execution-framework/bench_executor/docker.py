@@ -12,6 +12,8 @@ from time import sleep
 from typing import List, Tuple
 from bench_executor.logger import Logger
 
+DOCKER_CONTROL_TIMEOUT = 30  # seconds
+
 
 class Docker():
     """Client for the Docker CLI."""
@@ -21,6 +23,43 @@ class Docker():
 
         """
         self._logger = logger
+
+    def _run_command(self, command: str, timeout: int = DOCKER_CONTROL_TIMEOUT) -> Tuple[int, str]:
+        """Run a Docker CLI command with a timeout.
+
+        Parameters
+        ----------
+        command : str
+            Command line to execute.
+        timeout : int
+            Maximum time in seconds to wait for completion.
+
+        Returns
+        -------
+        status_code : int
+            Exit code of the command. A timeout returns 124.
+        output : str
+            Combined stdout/stderr output.
+        """
+
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+            output = (completed.stdout or '')
+            if completed.stderr:
+                output += completed.stderr
+            return completed.returncode, output
+        except subprocess.TimeoutExpired:
+            self._logger.error(
+                f'Docker command timed out after {timeout}s: {command}'
+            )
+            return 124, ''
 
     def exec(self, container_id: str, command: str) -> int:
         """Execute a command inside a running Docker container.
@@ -40,7 +79,7 @@ class Docker():
 
         cmd = f'docker exec "{container_id}" {command}'
         self._logger.debug(f'Executing command in Docker container: {cmd}')
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
 
         return status_code
 
@@ -60,7 +99,7 @@ class Docker():
 
         cmd = f'docker wait "{container_id}"'
         self._logger.debug(f'Waiting for Docker container: {cmd}')
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd, timeout=24 * 60 * 60)
 
         if status_code != 0:
             return status_code
@@ -90,14 +129,14 @@ class Docker():
 
         cmd = f'docker stop "{container_id}"'
         self._logger.debug(f'Stopping Docker container: {cmd}')
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
 
         if status_code != 0:
             return False
 
         cmd = f'docker rm "{container_id}"'
         self._logger.debug(f'Removing Docker container: {cmd}')
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
 
         return status_code == 0
 
@@ -116,7 +155,7 @@ class Docker():
         """
 
         cmd = f'docker logs "{container_id}"'
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
 
         logs = []
         for line in output.split('\n'):
@@ -142,13 +181,13 @@ class Docker():
         """
         # Check if the image already exists
         cmd = f'docker inspect "{image}"'
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
         if status_code == 0:
             return True
 
         # Pull the image
         cmd = f'docker pull -q "{image}"'
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd, timeout=30 * 60)
         return status_code == 0
 
     def run(self, image: str, command: str, name: str, detach: bool,
@@ -196,10 +235,12 @@ class Docker():
                 f'docker ps -a --filter "name=^{name}$" '
                 '--format "{{.Names}}"'
             )
-            status_code, output = subprocess.getstatusoutput(cmd)
+            status_code, output = self._run_command(cmd)
+            if status_code == 124:
+                return False, ''
             if status_code == 0 and output.strip() and not removing:
                 cmd = f'docker stop "{name}" && docker rm "{name}"'
-                subprocess.getstatusoutput(cmd)
+                self._run_command(cmd)
                 self._logger.debug(f'Schedule container "{name}" for removal')
                 removing = True
             elif status_code != 0 or not output.strip():
@@ -219,7 +260,7 @@ class Docker():
         cmd += f' --network "{network}"'
         cmd += f' {image} {command}'
         self._logger.debug(f'Starting Docker container: {cmd}')
-        status_code, container_id = subprocess.getstatusoutput(cmd)
+        status_code, container_id = self._run_command(cmd, timeout=5 * 60)
         container_id = container_id.strip()
         self._logger.debug(f'Container "{container_id}" running')
 
@@ -246,13 +287,15 @@ class Docker():
             f'docker network ls --filter "name=^{network}$" '
             '--format "{{.Name}}"'
         )
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
+        if status_code == 124:
+            return False
         if status_code == 0 and output.strip():
             return True
 
         # Create it as it does not exist yet
         cmd = f'docker network create "{network}"'
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
         self._logger.debug(f'Created network "{network}"')
 
         return status_code == 0
@@ -270,7 +313,7 @@ class Docker():
 
         # Check if network exist
         cmd = 'docker info --format \'{{json .}}\''
-        status_code, output = subprocess.getstatusoutput(cmd)
+        status_code, output = self._run_command(cmd)
 
         if status_code != 0:
             return False, {}

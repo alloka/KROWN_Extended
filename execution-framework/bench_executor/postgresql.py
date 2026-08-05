@@ -235,41 +235,41 @@ class PostgreSQL(Container):
             columns = next(csv_reader)
             columns = [x.lower() for x in columns]
 
-        # Load CSV
-        connection = psycopg2.connect(host=HOST, database=DB,
-                                      user=PASSWORD, password=PASSWORD)
-        try:
-            cursor = connection.cursor()
+        # Load CSV inside the PostgreSQL container so later Docker-network
+        # clients observe the same database state.
+        c = ','.join(columns)
+        ddl_columns = ' VARCHAR , '.join(columns) + ' VARCHAR'
 
-            if create:
-                cursor.execute(f'DROP TABLE IF EXISTS {table};')
-                c = ' VARCHAR , '.join(columns) + ' VARCHAR'
-                cursor.execute(f'CREATE TABLE {table} (KEY SERIAL, {c}, '
-                               'PRIMARY KEY(KEY))')
+        if create:
+            ddl_command = (
+                f'psql -h {HOST} -p {PORT} -U {USER} -d {DB} -c '
+                f'"DROP TABLE IF EXISTS {table}; '
+                f'CREATE TABLE {table} (KEY SERIAL, {ddl_columns}, '
+                f'PRIMARY KEY(KEY))"'
+            )
+            ddl_success, _ = self.exec(ddl_command)
+            if not ddl_success:
+                self._logger.error(f'Failed to create table "{table}"')
+                return False
 
-            c = ','.join(columns)
-            cursor.execute(f'COPY {table} ({c}) FROM '
-                           f'\'/data/shared/{csv_file}\' '
-                           'DELIMITER \',\' NULL \'NULL\' CSV HEADER;')
-            cursor.execute('COMMIT;')
+        load_command = (
+            f'psql -h {HOST} -p {PORT} -U {USER} -d {DB} -c '
+            f'"\\copy {table} ({c}) FROM \'/data/shared/{csv_file}\' '
+            f"WITH (FORMAT CSV, HEADER true, DELIMITER ',', NULL 'NULL')\""
+        )
+        load_success, _ = self.exec(load_command)
+        if not load_success:
+            self._logger.error(f'Failed to load CSV "{csv_file}" into table "{table}"')
+            return False
 
-            header = '| ID | ' + ' | '.join(columns) + ' |'
-            self._logger.debug(header)
-            self._logger.debug('-' * len(header))
-
-            cursor.execute(f'SELECT * FROM {table};')
-            number_of_records = 0
-            for record in cursor:
-                number_of_records += 1
-                self._logger.debug(record)
-            if number_of_records == 0:
-                self._logger.error('No records loaded after loading CSV')
-                success = False
-        except Exception as e:
-            self._logger.error(f'Failed to load CSV: "{e}"')
-            success = False
-        finally:
-            connection.close()
+        verify_command = (
+            f'psql -h {HOST} -p {PORT} -U {USER} -d {DB} -c '
+            f'"SELECT 1 FROM {table} LIMIT 1;"'
+        )
+        verify_success, _ = self.exec(verify_command)
+        if not verify_success:
+            self._logger.error('No records loaded after loading CSV')
+            return False
 
         return success
 
