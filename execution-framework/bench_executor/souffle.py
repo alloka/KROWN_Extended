@@ -5,6 +5,8 @@ The Souffle reasoner.
 import os
 import psutil
 import threading
+import tempfile
+import shutil
 from typing import Optional
 from bench_executor.container import Container
 from bench_executor.logger import Logger
@@ -37,11 +39,14 @@ class Souffle(Container):
         self._config_path = os.path.abspath(config_path)
         self._logger = Logger(__name__, directory, verbose)
         self._verbose = verbose
-        
-        os.makedirs(os.path.join(self._data_path, 'souffle'), exist_ok=True)
+
+        # Use a Linux temp directory for the Souffle data volume so the mount
+        # never touches the Windows-mounted case path (avoids DrvFs/NTFS
+        # case-folding conflicts with the data-generator/Souffle/ parent).
+        self._souffle_tmp = tempfile.mkdtemp(prefix='krown_souffle_')
         super().__init__(f'alloka/souffle:v{VERSION}', 'Souffle',
                          self._logger,
-                         volumes=[f'{self._data_path}/souffle:/data',
+                 volumes=[f'{self._souffle_tmp}:/data',
                                   f'{self._data_path}/shared:/data/shared'])
         print('INIT')
 
@@ -56,6 +61,13 @@ class Souffle(Container):
 
         """
         return __name__.lower()
+
+    def stop(self) -> bool:
+        """Stop the Souffle container and clean up the temp data directory."""
+        result = super().stop()
+        if hasattr(self, '_souffle_tmp') and os.path.isdir(self._souffle_tmp):
+            shutil.rmtree(self._souffle_tmp, ignore_errors=True)
+        return result
 
     def _execute_with_timeout(self, command: str) -> bool:
         self._logger.info(f'Executing Souffle command: {command}')

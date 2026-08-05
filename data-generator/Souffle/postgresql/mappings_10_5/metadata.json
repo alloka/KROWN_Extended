@@ -31,6 +31,28 @@
                 "rdb_name": "db"
             },
             "expect_failure": false
+        },
+        {
+            "@id": "http://example.org/mappings/10/5#step3",
+            "name": "Execute reverse RML mapping with provenance",
+            "resource": "ReverseSouffle",
+            "command": "execute_mapping",
+            "parameters": {
+                "mapping_file": "mapping.r2rml.ttl",
+                "output_file": "out_reverse.nt",
+                "serialization": "ntriples",
+                "reverse_program_file": "Datalog_reverse.rs",
+                "forward_program_file": "Datalog_forward_with_prov.rs",
+                "support_report": "support_report.json",
+                "with_provenance": true,
+                "rdb_host": "PostgreSQL",
+                "rdb_port": 5432,
+                "rdb_username": "root",
+                "rdb_password": "root",
+                "rdb_type": "PostgreSQL",
+                "rdb_name": "db"
+            },
+            "expect_failure": false
         }
     ]
 }

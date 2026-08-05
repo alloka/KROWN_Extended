@@ -13,6 +13,7 @@ import os
 import shutil
 import psutil
 import threading
+import tempfile
 from typing import Optional
 from bench_executor.container import Container
 from bench_executor.logger import Logger
@@ -46,8 +47,11 @@ class ReverseSouffle(Container):
         self._reverse_script_host_path = self._resolve_reverse_script(self._config_path)
         self._reverse_script_container_path = '/souffle/reverseR2RML.py'
 
-        os.makedirs(os.path.join(self._data_path, 'souffle'), exist_ok=True)
-        volumes = [f'{self._data_path}/souffle:/data',
+        # Use a Linux temp directory for the Souffle data volume so the mount
+        # never touches the Windows-mounted case path (avoids DrvFs/NTFS
+        # case-folding conflicts with the data-generator/Souffle/ parent).
+        self._souffle_tmp = tempfile.mkdtemp(prefix='krown_rsouffle_')
+        volumes = [f'{self._souffle_tmp}:/data',
                    f'{self._data_path}/shared:/data/shared']
         if self._reverse_script_host_path is not None:
             volumes.append(
@@ -61,6 +65,13 @@ class ReverseSouffle(Container):
     @property
     def root_mount_directory(self) -> str:
         return __name__.lower()
+
+    def stop(self) -> bool:
+        """Stop the ReverseSouffle container and clean up the temp data directory."""
+        result = super().stop()
+        if hasattr(self, '_souffle_tmp') and os.path.isdir(self._souffle_tmp):
+            shutil.rmtree(self._souffle_tmp, ignore_errors=True)
+        return result
 
     def _execute_with_timeout(self, command: str) -> bool:
         self._logger.info(f'Executing ReverseSouffle command: {command}')
