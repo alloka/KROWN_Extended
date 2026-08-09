@@ -79,7 +79,7 @@ class Docker():
 
         cmd = f'docker exec "{container_id}" {command}'
         self._logger.debug(f'Executing command in Docker container: {cmd}')
-        status_code, output = self._run_command(cmd)
+        status_code, output = self._run_command(cmd, timeout=10800)
 
         return status_code
 
